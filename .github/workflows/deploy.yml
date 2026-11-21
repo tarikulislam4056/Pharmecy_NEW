@@ -1,0 +1,39 @@
+name: Deploy to cPanel via FTP (Data-Safe)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  web-deploy:
+    name: Build & Upload Code to cPanel FTP (Preserve Live Data)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🚚 Get latest code
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 📦 Install dependencies & Build (Code Only)
+        run: |
+          npm install
+          npm run build
+          cp api.php dist/ 2>/dev/null || true
+          cp public/.htaccess dist/ 2>/dev/null || true
+          cp db_config.example.php dist/ 2>/dev/null || true
+          rm -f dist/erp_data_snapshot.json dist/erp_local_backup.json dist/database.sql dist/fresh_database.sql dist/db_config.php dist/.cpanel.yml
+
+      - name: 🚀 Sync Code Files via FTP to cPanel (Never Delete or Overwrite Live Data)
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_DIR: ${{ secrets.FTP_DIR || '/public_html/' }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y lftp
+          lftp -c "set ftp:ssl-allow false; set net:timeout 15; set net:max-retries 3; open -u '$FTP_USERNAME','$FTP_PASSWORD' '$FTP_SERVER'; mirror -R --verbose --exclude-glob erp_data_snapshot.json --exclude-glob erp_local_backup.json --exclude-glob database.sql --exclude-glob fresh_database.sql --exclude-glob db_config.php --exclude-glob '.cpanel.yml' --exclude-glob 'erp_storage/**' --exclude-glob 'dokanpro_erp_data/**' --exclude-glob 'backups/**' ./dist/ '$FTP_DIR'"
