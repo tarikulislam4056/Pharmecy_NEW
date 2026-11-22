@@ -61,33 +61,36 @@ jobs:
           run_lftp_deploy() {
             local ssl_allow="$1"
             local ssl_protect="$2"
-            local script_file="/tmp/cpanel_deploy.lftp"
-            printf '%s\n' \
-              "set ssl:verify-certificate no" \
-              "set ftp:ssl-allow ${ssl_allow}" \
-              "set ftp:ssl-force false" \
-              "set ftp:ssl-protect-data ${ssl_protect}" \
-              "set ftp:passive-mode true" \
-              "set net:timeout 20" \
-              "set net:max-retries 3" \
-              "set net:reconnect-interval-base 5" \
-              "mirror -R --verbose --exclude-glob erp_data_snapshot.json --exclude-glob erp_local_backup.json --exclude-glob database.sql --exclude-glob fresh_database.sql --exclude-glob db_config.php --exclude-glob '.cpanel.yml' --exclude-glob 'erp_storage/**' --exclude-glob 'dokanpro_erp_data/**' --exclude-glob 'backups/**' ./dist/ \"${CLEAN_DIR}\"" \
-              "bye" > "$script_file"
-            chmod 600 "$script_file"
-            lftp -p "$CLEAN_PORT" -u "${CLEAN_USER},${CLEAN_PASS}" "$CLEAN_SERVER" -f "$script_file"
-            local status=$?
-            rm -f "$script_file"
-            return $status
+            lftp -e "
+              set cmd:fail-exit yes;
+              set ssl:verify-certificate no;
+              set ftp:ssl-allow ${ssl_allow};
+              set ftp:ssl-force false;
+              set ftp:ssl-protect-data ${ssl_protect};
+              set ftp:passive-mode true;
+              set net:timeout 20;
+              set net:max-retries 3;
+              set net:reconnect-interval-base 5;
+              mirror -R --verbose \
+                --exclude-glob erp_data_snapshot.json \
+                --exclude-glob erp_local_backup.json \
+                --exclude-glob database.sql \
+                --exclude-glob fresh_database.sql \
+                --exclude-glob db_config.php \
+                --exclude-glob '.cpanel.yml' \
+                --exclude-glob 'erp_storage/**' \
+                --exclude-glob 'dokanpro_erp_data/**' \
+                --exclude-glob 'backups/**' \
+                ./dist/ \"${CLEAN_DIR}\";
+              bye
+            " -p "$CLEAN_PORT" -u "${CLEAN_USER},${CLEAN_PASS}" "$CLEAN_SERVER"
           }
 
           echo "🔐 Deploying to ${CLEAN_SERVER}:${CLEAN_PORT} -> ${CLEAN_DIR} (attempting Explicit FTPS/TLS first)..."
           if ! run_lftp_deploy "true" "true"; then
             echo "⚠️ FTPS attempt failed. Retrying with standard FTP (ssl-allow false)..."
             if ! run_lftp_deploy "false" "false"; then
-              echo "❌ 530 Login authentication failed! Please check your cPanel FTP Secrets in GitHub Settings -> Secrets and variables -> Actions:"
-              echo "  1. FTP_SERVER   = Hostname or IP only (e.g. ftp.yourdomain.com — no ftp:// or trailing slash)"
-              echo "  2. FTP_USERNAME = Full FTP username (for cPanel sub-FTP accounts, MUST include @yourdomain.com)"
-              echo "  3. FTP_PASSWORD = Exact FTP password from cPanel -> FTP Accounts"
+              echo "❌ FTP deploy failed with both FTPS and plain FTP. Check the lftp error line above and verify FTP_SERVER, FTP_USERNAME, FTP_PASSWORD, and FTP_DIR in GitHub Secrets."
               exit 1
             fi
           fi
