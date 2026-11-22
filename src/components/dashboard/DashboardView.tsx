@@ -300,20 +300,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       .reduce((sum, p) => sum + (p.currentBalance > 0 ? p.currentBalance : 0), 0);
   }, [parties]);
 
-  // Total Cash in Hand / Wallets Balance
+  // Total Cash in Hand / Wallets Balance (never negative)
   const totalCashInHand = useMemo(() => {
-    const sum = wallets.reduce((acc, w) => acc + w.balance, 0);
-    return sum;
+    const sum = wallets.reduce((acc, w) => acc + Math.max(0, Number(w.balance || 0)), 0);
+    return Math.max(0, sum);
   }, [wallets]);
 
   // Total Stock Value (Inventory Valuation based on current stock quantity * purchase price for all items)
   const totalStockValue = useMemo(() => {
-    return products.reduce((acc, p) => acc + (Number(p.stock || 0) * Number(p.purchasePrice || 0)), 0);
+    return products.reduce(
+      (acc, p) => acc + Math.max(0, Number(p.stock || 0)) * Math.max(0, Number(p.purchasePrice || 0)),
+      0
+    );
   }, [products]);
 
-  // Total Stock Quantity & Items Count
+  // Total Stock Quantity & Items Count (never negative)
   const totalStockQty = useMemo(() => {
-    return products.reduce((acc, p) => acc + Number(p.stock || 0), 0);
+    return products.reduce((acc, p) => acc + Math.max(0, Number(p.stock || 0)), 0);
   }, [products]);
   const totalItemsCount = products.length;
 

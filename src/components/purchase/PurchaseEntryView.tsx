@@ -286,28 +286,29 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
   const netAmount = Math.max(0, itemsSubtotal);
   const totalAmount = Math.max(0, netAmount + (deliveryFee || 0));
 
-  // Compute Total Paid from payment splits
+  // Compute Total Paid from payment splits (DUE rows NEVER count as Cash In Hand deduction!)
   const totalPaidAmount = useMemo(() => {
-    if (purchaseMode === 'CREDIT' && paymentSplits.length === 1 && paymentSplits[0].amount === 0) {
-      return 0;
-    }
-    return paymentSplits.reduce((sum, p) => sum + (p.amount || 0), 0);
-  }, [paymentSplits, purchaseMode]);
+    return paymentSplits.reduce(
+      (sum, p) => (p.method === 'DUE' ? sum : sum + Math.max(0, Number(p.amount || 0))),
+      0
+    );
+  }, [paymentSplits]);
 
   // Auto-sync cash payment amount if purchaseMode is CASH and single payment row
   useEffect(() => {
     if (purchaseMode === 'CASH') {
       setPaymentSplits(prev => {
         if (prev.length === 1) {
-          return [{ ...prev[0], amount: totalAmount }];
+          const nextMethod = prev[0].method === 'DUE' ? 'CASH' : prev[0].method;
+          return [{ ...prev[0], amount: totalAmount, method: nextMethod }];
         }
         return prev;
       });
     } else {
-      // In credit mode, default first row to 0 if not edited
+      // In credit mode, ensure single DUE row stays at 0 cash paid
       setPaymentSplits(prev => {
-        if (prev.length === 1 && prev[0].amount === totalAmount && totalAmount > 0) {
-          return [{ ...prev[0], amount: 0 }];
+        if (prev.length === 1 && prev[0].method === 'DUE' && prev[0].amount !== 0) {
+          return [{ ...prev[0], amount: 0, method: 'DUE' }];
         }
         return prev;
       });
@@ -730,7 +731,8 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
       };
     });
 
-    const primaryPayment = paymentSplits[0] || { method: 'CASH', walletId: wallets[0]?.id || 'w-cash' };
+    const activePaidSplit = paymentSplits.find(s => s.method !== 'DUE' && Number(s.amount || 0) > 0);
+    const isFullCreditPurchase = totalPaidAmount <= 0 || !activePaidSplit;
 
     const newPurchase = createPurchaseInvoice({
       supplierId: selectedSupplier?.id || '',
@@ -743,10 +745,10 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
       discount: totalDiscount,
       taxAmount: 0,
       grandTotal: totalAmount,
-      paidAmount: totalPaidAmount,
-      dueAmount: dueAmount,
-      paymentMethod: primaryPayment.method,
-      walletId: primaryPayment.walletId,
+      paidAmount: isFullCreditPurchase ? 0 : totalPaidAmount,
+      dueAmount: isFullCreditPurchase ? totalAmount : dueAmount,
+      paymentMethod: isFullCreditPurchase ? 'DUE' : activePaidSplit.method,
+      walletId: isFullCreditPurchase ? 'credit' : activePaidSplit.walletId,
       notes: description + (deliveryFee > 0 ? ` (Shipping Fee: ৳${deliveryFee})` : ''),
       date: invoiceDate,
     });
@@ -806,7 +808,11 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
           {/* Right: Cash vs Credit Toggle Switch */}
           <div className="flex items-center gap-3 bg-white dark:bg-slate-800/80 px-4 py-1.5 rounded-full border border-[#ECE8FF] dark:border-slate-700 shadow-2xs">
             <span
-              onClick={() => setPurchaseMode('CASH')}
+              onClick={() => {
+                setPurchaseMode('CASH');
+                const cashWallet = wallets.find(w => w.type === 'CASH')?.id || wallets[0]?.id || 'w-cash';
+                setPaymentSplits([{ id: `ppay-${Date.now()}`, method: 'CASH', walletId: cashWallet, amount: totalAmount }]);
+              }}
               className={`text-xs font-bold cursor-pointer transition-colors ${
                 purchaseMode === 'CASH' ? 'text-[#8271FE] dark:text-[#A79BFE]' : 'text-slate-400 dark:text-slate-500'
               }`}
@@ -817,7 +823,16 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
             {/* Toggle Switch Component */}
             <button
               type="button"
-              onClick={() => setPurchaseMode(purchaseMode === 'CASH' ? 'CREDIT' : 'CASH')}
+              onClick={() => {
+                const nextMode = purchaseMode === 'CASH' ? 'CREDIT' : 'CASH';
+                setPurchaseMode(nextMode);
+                const cashWallet = wallets.find(w => w.type === 'CASH')?.id || wallets[0]?.id || 'w-cash';
+                if (nextMode === 'CREDIT') {
+                  setPaymentSplits([{ id: `ppay-${Date.now()}`, method: 'DUE', walletId: cashWallet, amount: 0 }]);
+                } else {
+                  setPaymentSplits([{ id: `ppay-${Date.now()}`, method: 'CASH', walletId: cashWallet, amount: totalAmount }]);
+                }
+              }}
               className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
                 purchaseMode === 'CASH' ? 'bg-[#8A7CFA]' : 'bg-[#CBD5E1] dark:bg-slate-600'
               }`}
@@ -830,7 +845,11 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
             </button>
 
             <span
-              onClick={() => setPurchaseMode('CREDIT')}
+              onClick={() => {
+                setPurchaseMode('CREDIT');
+                const cashWallet = wallets.find(w => w.type === 'CASH')?.id || wallets[0]?.id || 'w-cash';
+                setPaymentSplits([{ id: `ppay-${Date.now()}`, method: 'DUE', walletId: cashWallet, amount: 0 }]);
+              }}
               className={`text-xs font-bold cursor-pointer transition-colors ${
                 purchaseMode === 'CREDIT' ? 'text-[#8271FE] dark:text-[#A79BFE]' : 'text-slate-400 dark:text-slate-500'
               }`}
@@ -1492,6 +1511,10 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                             }
                             handleUpdatePaymentSplit(split.id, 'method', newMethod);
                             handleUpdatePaymentSplit(split.id, 'walletId', matchingWalletId);
+                            if (newMethod === 'DUE') {
+                              handleUpdatePaymentSplit(split.id, 'amount', 0);
+                              if (paymentSplits.length === 1) setPurchaseMode('CREDIT');
+                            }
                           }}
                           className="w-full appearance-none pl-3 pr-8 py-2 bg-white dark:bg-slate-800 border border-[#DCD6FE] dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-[#8A7CFA]"
                         >
@@ -1520,8 +1543,10 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                           <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                         </div>
                       ) : (
-                        <div className="px-3 py-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-xl text-[11px] font-medium text-amber-800 dark:text-amber-300 flex items-center">
-                          {language === 'bn' ? 'সাপ্লায়ার বাকি হিসেবে যোগ হবে' : 'Will be added as supplier due'}
+                        <div className="px-3 py-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-xl text-[11px] font-semibold text-amber-800 dark:text-amber-300 flex items-center">
+                          {language === 'bn'
+                            ? 'বাকি ক্রয় — Cash In Hand থেকে বিয়োগ হবে না (৳০)'
+                            : 'Credit Purchase — Not deducted from Cash In Hand (৳0)'}
                         </div>
                       )}
                     </div>
@@ -1533,13 +1558,18 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                           type="number"
                           min="0"
                           step="any"
-                          value={split.amount || ''}
-                          onChange={e => handleUpdatePaymentSplit(split.id, 'amount', parseFloat(e.target.value) || 0)}
-                          placeholder="0.00"
-                          className={`w-full px-3 py-2 bg-white dark:bg-slate-800 border rounded-xl text-xs sm:text-sm font-mono font-bold text-slate-800 dark:text-white focus:outline-none ${
-                            isInsufficient
-                              ? 'border-rose-500 text-rose-600 focus:border-rose-500'
-                              : 'border-[#DCD6FE] dark:border-slate-700 focus:border-[#8A7CFA]'
+                          disabled={isDue}
+                          value={isDue ? 0 : (split.amount || '')}
+                          onChange={e =>
+                            handleUpdatePaymentSplit(split.id, 'amount', Math.max(0, parseFloat(e.target.value) || 0))
+                          }
+                          placeholder={isDue ? '0.00 (Credit / বাকি)' : '0.00'}
+                          className={`w-full px-3 py-2 border rounded-xl text-xs sm:text-sm font-mono font-bold focus:outline-none ${
+                            isDue
+                              ? 'bg-slate-100 dark:bg-slate-800/60 border-[#DCD6FE] dark:border-slate-700 text-slate-400 cursor-not-allowed'
+                              : isInsufficient
+                              ? 'bg-white dark:bg-slate-800 border-rose-500 text-rose-600 focus:border-rose-500'
+                              : 'bg-white dark:bg-slate-800 border-[#DCD6FE] dark:border-slate-700 text-slate-800 dark:text-white focus:border-[#8A7CFA]'
                           }`}
                         />
                       </div>

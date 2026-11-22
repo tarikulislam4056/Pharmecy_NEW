@@ -506,15 +506,15 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
     return schedules;
   }, [saleMode, emiStartDate, emiTotalInstallments, emiFrequency, emiPerPeriodAmount]);
 
-  // Compute Total Received from payment splits or EMI downpayment
+  // Compute Total Received from payment splits or EMI downpayment (DUE rows NEVER count as Cash In Hand!)
   const totalReceivedAmount = useMemo(() => {
     if (saleMode === 'INSTALLMENT') {
-      return emiDownPayment || 0;
+      return Math.max(0, Number(emiDownPayment || 0));
     }
-    if (saleMode === 'CREDIT' && paymentSplits.length === 1 && paymentSplits[0].amount === 0) {
-      return 0;
-    }
-    return paymentSplits.reduce((sum, p) => sum + (p.amount || 0), 0);
+    return paymentSplits.reduce(
+      (sum, p) => (p.method === 'DUE' ? sum : sum + Math.max(0, Number(p.amount || 0))),
+      0
+    );
   }, [paymentSplits, saleMode, emiDownPayment]);
 
   // Auto-sync cash payment amount if saleMode is CASH and single payment row
@@ -522,14 +522,15 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
     if (saleMode === 'CASH') {
       setPaymentSplits(prev => {
         if (prev.length === 1) {
-          return [{ ...prev[0], amount: totalAmount, method: 'CASH' }];
+          const nextMethod = prev[0].method === 'DUE' ? 'CASH' : prev[0].method;
+          return [{ ...prev[0], amount: totalAmount, method: nextMethod }];
         }
         return prev;
       });
     } else if (saleMode === 'CREDIT') {
-      // In credit mode, default first row to 0 if not edited
+      // In credit mode, ensure single DUE row stays at 0 cash received
       setPaymentSplits(prev => {
-        if (prev.length === 1 && prev[0].amount === totalAmount && totalAmount > 0) {
+        if (prev.length === 1 && prev[0].method === 'DUE' && prev[0].amount !== 0) {
           return [{ ...prev[0], amount: 0, method: 'DUE' }];
         }
         return prev;
@@ -1362,7 +1363,8 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
       };
     });
 
-    const primaryPayment = paymentSplits[0] || { method: 'CASH', walletId: wallets[0]?.id || 'w-cash' };
+    const activePaidSplit = paymentSplits.find(s => s.method !== 'DUE' && Number(s.amount || 0) > 0);
+    const isFullCreditSale = totalReceivedAmount <= 0 || !activePaidSplit;
 
     const newInvoice = createSaleInvoice({
       invoiceNumber: finalInvoiceNo || undefined,
@@ -1376,10 +1378,10 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
       discountType: 'flat',
       vatAmount: 0,
       grandTotal: totalAmount,
-      paidAmount: totalReceivedAmount,
-      dueAmount: dueAmount,
-      paymentMethod: primaryPayment.method,
-      walletId: primaryPayment.walletId,
+      paidAmount: isFullCreditSale ? 0 : totalReceivedAmount,
+      dueAmount: isFullCreditSale ? totalAmount : dueAmount,
+      paymentMethod: isFullCreditSale ? 'DUE' : activePaidSplit.method,
+      walletId: isFullCreditSale ? 'due' : activePaidSplit.walletId,
       notes: description + (deliveryFee > 0 ? ` (Delivery Fee: ৳${deliveryFee})` : ''),
       date: invoiceDate,
     });
@@ -1495,7 +1497,11 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
           <div className="flex items-center bg-white dark:bg-slate-800/80 p-1 rounded-full border border-[#ECE8FF] dark:border-slate-700 shadow-2xs">
             <button
               type="button"
-              onClick={() => setSaleMode('CASH')}
+              onClick={() => {
+                setSaleMode('CASH');
+                const cashWallet = wallets.find(w => w.type === 'CASH')?.id || wallets[0]?.id || 'w-cash';
+                setPaymentSplits([{ id: `pay-${Date.now()}`, method: 'CASH', walletId: cashWallet, amount: totalAmount }]);
+              }}
               className={`px-3 py-1 text-xs font-bold rounded-full transition-all cursor-pointer ${
                 saleMode === 'CASH'
                   ? 'bg-[#8A7CFA] text-white shadow-xs'
@@ -1507,7 +1513,11 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
 
             <button
               type="button"
-              onClick={() => setSaleMode('CREDIT')}
+              onClick={() => {
+                setSaleMode('CREDIT');
+                const cashWallet = wallets.find(w => w.type === 'CASH')?.id || wallets[0]?.id || 'w-cash';
+                setPaymentSplits([{ id: `pay-${Date.now()}`, method: 'DUE', walletId: cashWallet, amount: 0 }]);
+              }}
               className={`px-3 py-1 text-xs font-bold rounded-full transition-all cursor-pointer ${
                 saleMode === 'CREDIT'
                   ? 'bg-[#8A7CFA] text-white shadow-xs'
@@ -2673,13 +2683,21 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
                               setSaleMode('INSTALLMENT');
                             } else {
                               handleUpdatePaymentSplit(split.id, 'method', val);
-                              // Auto-select a suitable wallet if method changes
-                              if (val === 'CASH') {
-                                const cashWallet = wallets.find(w => w.type === 'CASH')?.id;
-                                if (cashWallet) handleUpdatePaymentSplit(split.id, 'walletId', cashWallet);
-                              } else if (val === 'BANK') {
-                                const bankWallet = wallets.find(w => w.type === 'BANK')?.id;
-                                if (bankWallet) handleUpdatePaymentSplit(split.id, 'walletId', bankWallet);
+                              if (val === 'DUE') {
+                                handleUpdatePaymentSplit(split.id, 'amount', 0);
+                                if (paymentSplits.length === 1) setSaleMode('CREDIT');
+                              } else {
+                                // Auto-select a suitable wallet if method changes
+                                if (val === 'CASH') {
+                                  const cashWallet = wallets.find(w => w.type === 'CASH')?.id;
+                                  if (cashWallet) handleUpdatePaymentSplit(split.id, 'walletId', cashWallet);
+                                } else if (val === 'MFS') {
+                                  const mfsWallet = wallets.find(w => w.type === 'MFS')?.id;
+                                  if (mfsWallet) handleUpdatePaymentSplit(split.id, 'walletId', mfsWallet);
+                                } else if (val === 'BANK') {
+                                  const bankWallet = wallets.find(w => w.type === 'BANK')?.id;
+                                  if (bankWallet) handleUpdatePaymentSplit(split.id, 'walletId', bankWallet);
+                                }
                               }
                             }
                           }}
@@ -2697,7 +2715,7 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
                       </div>
 
                       {/* Wallet Selector Dropdown */}
-                      {split.method !== 'DUE' && split.method !== 'INSTALLMENT' && (
+                      {split.method !== 'DUE' && split.method !== 'INSTALLMENT' ? (
                         <div className="relative flex-1">
                           <select
                             value={split.walletId}
@@ -2712,7 +2730,13 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
                           </select>
                           <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                         </div>
-                      )}
+                      ) : split.method === 'DUE' ? (
+                        <div className="flex-1 px-3 py-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-xl text-[11px] font-semibold text-amber-800 dark:text-amber-300">
+                          {language === 'bn'
+                            ? 'বাকি বিক্রয় — Cash In Hand যোগ হবে না (৳০)'
+                            : 'Credit Sale — Not added to Cash In Hand (৳0)'}
+                        </div>
+                      ) : null}
 
                       {/* Trash icon for removing split if more than 1 */}
                       {paymentSplits.length > 1 && (
@@ -2734,10 +2758,17 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
                           type="number"
                           min="0"
                           step="any"
-                          value={split.amount || ''}
-                          onChange={e => handleUpdatePaymentSplit(split.id, 'amount', parseFloat(e.target.value) || 0)}
-                          placeholder="0.00"
-                          className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-[#DCD6FE] dark:border-slate-700 rounded-xl text-xs sm:text-sm font-mono font-bold text-slate-800 dark:text-white focus:outline-none focus:border-[#8A7CFA]"
+                          disabled={split.method === 'DUE'}
+                          value={split.method === 'DUE' ? 0 : (split.amount || '')}
+                          onChange={e =>
+                            handleUpdatePaymentSplit(split.id, 'amount', Math.max(0, parseFloat(e.target.value) || 0))
+                          }
+                          placeholder={split.method === 'DUE' ? '0.00 (Due)' : '0.00'}
+                          className={`w-full px-3 py-2 border border-[#DCD6FE] dark:border-slate-700 rounded-xl text-xs sm:text-sm font-mono font-bold focus:outline-none focus:border-[#8A7CFA] ${
+                            split.method === 'DUE'
+                              ? 'bg-slate-100 dark:bg-slate-800/60 text-slate-400 cursor-not-allowed'
+                              : 'bg-white dark:bg-slate-800 text-slate-800 dark:text-white'
+                          }`}
                         />
                       </div>
 

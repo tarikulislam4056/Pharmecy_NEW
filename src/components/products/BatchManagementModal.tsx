@@ -168,14 +168,31 @@ export const BatchManagementModal: React.FC<BatchManagementModalProps> = ({
   };
 
   const handleSaveEditBatch = (batchId: string) => {
+    const parsedEditStock = Number(editStock);
+    const parsedEditPrice = Number(editPurchasePrice);
+    if (!Number.isFinite(parsedEditStock) || parsedEditStock < 0) {
+      showToast(
+        language === 'bn' ? 'ব্যাচের স্টক ঋণাত্মক (-) হতে পারবে না!' : 'Batch stock cannot be negative!',
+        'error'
+      );
+      return;
+    }
+    if (editPurchasePrice !== '' && (!Number.isFinite(parsedEditPrice) || parsedEditPrice < 0)) {
+      showToast(
+        language === 'bn' ? 'ক্রয় মূল্য ঋণাত্মক (-) হতে পারবে না!' : 'Purchase price cannot be negative!',
+        'error'
+      );
+      return;
+    }
+
     const updated = batches.map(b => {
       if (b.id === batchId) {
         return {
           ...b,
           batchNumber: editBatchNumber.trim() || b.batchNumber,
           expDate: editExpDate,
-          stock: Number(editStock) || 0,
-          purchasePrice: Number(editPurchasePrice) || b.purchasePrice,
+          stock: Math.max(0, parsedEditStock || 0),
+          purchasePrice: editPurchasePrice !== '' ? Math.max(0, parsedEditPrice) : b.purchasePrice,
         };
       }
       return b;
@@ -486,6 +503,7 @@ export const BatchManagementModal: React.FC<BatchManagementModalProps> = ({
                 </label>
                 <input
                   type="number"
+                  min="0"
                   step="any"
                   value={newPurchasePrice}
                   onChange={e => setNewPurchasePrice(e.target.value)}
@@ -645,6 +663,7 @@ export const BatchManagementModal: React.FC<BatchManagementModalProps> = ({
                           {isEditing ? (
                             <input
                               type="number"
+                              min="0"
                               step="any"
                               value={editPurchasePrice}
                               onChange={e => setEditPurchasePrice(e.target.value)}
@@ -660,6 +679,7 @@ export const BatchManagementModal: React.FC<BatchManagementModalProps> = ({
                           {isEditing ? (
                             <input
                               type="number"
+                              min="0"
                               step="any"
                               value={editStock}
                               onChange={e => setEditStock(e.target.value)}

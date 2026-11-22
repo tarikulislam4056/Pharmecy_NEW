@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { getCustomerTotalDue, checkCustomerCreditLimit } from '../utils/dueHelpers';
 import {
   Language,
@@ -570,6 +570,40 @@ export const COMMON_DISEASE_CATEGORIES: DiseaseCategoryItem[] = [
   { id: 'Supplements & Nutrition', name: 'ভিটামিন ও পুষ্টি (Supplements)', nameBn: 'পুষ্টি ও দুর্বলতা', isDefault: true },
 ];
 
+// Global non-negative sanitizers: ensures no wallet balance, product/batch stock, or party balance can EVER go below 0
+const clampNonNegative = (val: any, decimals = 2): number => {
+  const num = Number(val);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return Math.max(0, Number(num.toFixed(decimals)));
+};
+
+const sanitizeWallets = (list: Wallet[]): Wallet[] =>
+  (Array.isArray(list) ? list : []).map(w => ({
+    ...w,
+    balance: clampNonNegative(w?.balance, 2),
+  }));
+
+const sanitizeProducts = (list: Product[]): Product[] =>
+  (Array.isArray(list) ? list : []).map(p => ({
+    ...p,
+    stock: clampNonNegative(p?.stock, 4),
+    batches: Array.isArray(p?.batches)
+      ? p.batches.map(b => ({
+          ...b,
+          stock: clampNonNegative(b?.stock, 4),
+          initialStock:
+            b?.initialStock !== undefined ? clampNonNegative(b.initialStock, 4) : b?.initialStock,
+        }))
+      : p?.batches,
+  }));
+
+const sanitizeParties = (list: Party[]): Party[] =>
+  (Array.isArray(list) ? list : []).map(p => ({
+    ...p,
+    openingBalance: clampNonNegative(p?.openingBalance, 2),
+    currentBalance: clampNonNegative(p?.currentBalance, 2),
+  }));
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Settings & Theme
   const [language, setLanguage] = useState<Language>(() => getPersistedData('language', 'en'));
@@ -598,7 +632,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     return { ...initialCompanySettings, ...persisted };
   });
-  const [products, setProducts] = useState<Product[]>(() => getPersistedData('products', initialProducts));
+  const [products, _setProducts] = useState<Product[]>(() =>
+    sanitizeProducts(getPersistedData('products', initialProducts))
+  );
+  const setProducts: React.Dispatch<React.SetStateAction<Product[]>> = useCallback(action => {
+    _setProducts(prev => sanitizeProducts(typeof action === 'function' ? action(prev) : action));
+  }, []);
   const [deletedProductIds, setDeletedProductIds] = useState<string[]>(() => {
     try {
       const raw = localStorage.getItem('DOKANPRO_DELETED_PRODUCT_IDS');
@@ -625,14 +664,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     deletedEntityIdsRef.current = deletedEntityIds;
   }, [deletedEntityIds]);
   const [categories, setCategories] = useState<Category[]>(() => getPersistedData('categories', initialCategories));
-  const [parties, setParties] = useState<Party[]>(() => {
+  const [parties, _setParties] = useState<Party[]>(() => {
     const raw: Party[] = getPersistedData('parties', initialParties);
-    return raw.map((p, idx) => ({
-      ...p,
-      serialNumber: p.serialNumber || `${p.type === 'SUPPLIER' ? 'SUPP' : 'CUST'}-${String(idx + 1).padStart(4, '0')}`,
-    }));
+    return sanitizeParties(
+      raw.map((p, idx) => ({
+        ...p,
+        serialNumber: p.serialNumber || `${p.type === 'SUPPLIER' ? 'SUPP' : 'CUST'}-${String(idx + 1).padStart(4, '0')}`,
+      }))
+    );
   });
-  const [wallets, setWallets] = useState<Wallet[]>(() => getPersistedData('wallets', initialWallets));
+  const setParties: React.Dispatch<React.SetStateAction<Party[]>> = useCallback(action => {
+    _setParties(prev => sanitizeParties(typeof action === 'function' ? action(prev) : action));
+  }, []);
+  const [wallets, _setWallets] = useState<Wallet[]>(() =>
+    sanitizeWallets(getPersistedData('wallets', initialWallets))
+  );
+  const setWallets: React.Dispatch<React.SetStateAction<Wallet[]>> = useCallback(action => {
+    _setWallets(prev => sanitizeWallets(typeof action === 'function' ? action(prev) : action));
+  }, []);
   const [saleInvoices, setSaleInvoices] = useState<SaleInvoice[]>(() => getPersistedData('saleInvoices', initialSaleInvoices));
   const [deletedSaleInvoices, setDeletedSaleInvoices] = useState<DeletedSaleInvoice[]>(() => getPersistedData('deletedSaleInvoices', initialDeletedSaleInvoices));
   const [saleReturns, setSaleReturns] = useState<SaleReturn[]>(() => getPersistedData('saleReturns', []));
@@ -1421,14 +1470,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const converterName = currentUser?.fullName || currentUser?.username || 'Admin';
     const poCreatorName = po.createdBy || 'Admin';
 
+    const safePaidAmount = Number(paidAmount || 0);
+    if (safePaidAmount < 0) {
+      showToast(language === 'bn' ? 'পরিশোধের পরিমাণ ঋণাত্মক হতে পারে না!' : 'Paid amount cannot be negative!', 'error');
+      return null;
+    }
+
     const finalSubtotal = finalItems.reduce((acc, item) => acc + item.total, 0);
     const finalGrandTotal = Math.max(0, finalSubtotal - finalDiscount);
-    const dueAmount = Math.max(0, finalGrandTotal - paidAmount);
+    const dueAmount = Math.max(0, finalGrandTotal - safePaidAmount);
 
     let finalWalletId = walletId || wallets[0]?.id || 'w-cash';
     let walletName = 'Cash';
 
-    if (paidAmount > 0) {
+    if (safePaidAmount > 0) {
       const selectedWallet = wallets.find(w => w.id === finalWalletId);
       if (!selectedWallet) {
         showToast(language === 'bn' ? 'পেমেন্ট ওয়ালেট খুঁজে পাওয়া যায়নি!' : 'Payment wallet not found!', 'error');
@@ -1586,7 +1641,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (w.id === finalWalletId) {
             return {
               ...w,
-              balance: w.balance - paidAmount,
+              balance: Math.max(0, Number((w.balance - paidAmount).toFixed(2))),
             };
           }
           return w;
@@ -3251,9 +3306,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
+    if (Number(prodData.stock || 0) < 0 || prodData.batches?.some(b => Number(b.stock || 0) < 0)) {
+      showToast(
+        language === 'bn' ? 'পণ্যের বা ব্যাচের স্টক ঋণাত্মক (-) হতে পারবে না!' : 'Product or batch stock cannot be negative!',
+        'error'
+      );
+    }
+
+    const safeStock = clampNonNegative(prodData.stock, 4);
+    const safeBatches = prodData.batches?.map(b => ({
+      ...b,
+      stock: clampNonNegative(b.stock, 4),
+      initialStock: b.initialStock !== undefined ? clampNonNegative(b.initialStock, 4) : b.initialStock,
+    }));
+
     const category = categories.find(c => c.id === prodData.categoryId);
     const newProduct: Product = {
       ...prodData,
+      stock: safeStock,
+      batches: safeBatches,
       id: `prod-${Date.now()}`,
       categoryName: category?.name || 'General',
       createdBy: currentUser?.id || 'usr-1',
@@ -3268,6 +3339,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateProduct = (id: string, updates: Partial<Product>) => {
+    if (
+      (updates.stock !== undefined && Number(updates.stock) < 0) ||
+      updates.batches?.some(b => Number(b.stock || 0) < 0)
+    ) {
+      showToast(
+        language === 'bn' ? 'পণ্যের বা ব্যাচের স্টক ঋণাত্মক (-) হতে পারবে না!' : 'Product or batch stock cannot be negative!',
+        'error'
+      );
+      return;
+    }
+
     if (updates.barcode && updates.barcode.trim()) {
       const dupBarcode = products.find(
         p => p.id !== id && p.barcode && p.barcode.trim().toLowerCase() === updates.barcode.trim().toLowerCase()
@@ -3314,12 +3396,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 batchNumber: updates.batchNumber || b.batchNumber,
               }));
             } else if (cleanExp) {
+              const safeNextStock = clampNonNegative(updates.stock !== undefined ? updates.stock : p.stock, 4);
               nextBatches = [{
                 id: `batch-${Date.now()}`,
                 batchNumber: updates.batchNumber || p.batchNumber || 'B-01',
                 expDate: cleanExp,
-                stock: updates.stock !== undefined ? updates.stock : p.stock,
-                initialStock: updates.stock !== undefined ? updates.stock : p.stock,
+                stock: safeNextStock,
+                initialStock: safeNextStock,
                 purchaseDate: new Date().toISOString().split('T')[0],
                 purchasePrice: updates.purchasePrice !== undefined ? updates.purchasePrice : p.purchasePrice,
                 salesPrice: updates.salesPrice !== undefined ? updates.salesPrice : p.salesPrice,
@@ -3330,7 +3413,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return {
             ...p,
             ...updates,
-            batches: nextBatches,
+            stock: clampNonNegative(updates.stock !== undefined ? updates.stock : p.stock, 4),
+            batches: nextBatches?.map(b => ({
+              ...b,
+              stock: clampNonNegative(b.stock, 4),
+              initialStock: b.initialStock !== undefined ? clampNonNegative(b.initialStock, 4) : b.initialStock,
+            })),
             categoryName: cat?.name || p.categoryName,
           };
         }
@@ -3451,17 +3539,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateProductBatches = (productId: string, batches: ProductBatch[]) => {
+    if (batches.some(b => Number(b.stock || 0) < 0)) {
+      showToast(
+        language === 'bn' ? 'ব্যাচের স্টক ঋণাত্মক (-) হতে পারবে না!' : 'Batch stock cannot be negative!',
+        'error'
+      );
+      return;
+    }
+    const safeBatches = batches.map(b => ({
+      ...b,
+      stock: clampNonNegative(b.stock, 4),
+      initialStock: b.initialStock !== undefined ? clampNonNegative(b.initialStock, 4) : b.initialStock,
+    }));
     setProducts(prev =>
       prev.map(p => {
         if (p.id === productId) {
-          const totalStock = batches.reduce((sum, b) => sum + (Number(b.stock) || 0), 0);
-          const activeBatches = batches.filter(b => Number(b.stock) > 0 && b.expDate);
+          const totalStock = clampNonNegative(
+            safeBatches.reduce((sum, b) => sum + (Number(b.stock) || 0), 0),
+            4
+          );
+          const activeBatches = safeBatches.filter(b => Number(b.stock) > 0 && b.expDate);
           activeBatches.sort((a, b) => a.expDate.localeCompare(b.expDate));
           const earliestExp = activeBatches[0]?.expDate || p.expDate || '';
-          const latestBatchNum = batches[batches.length - 1]?.batchNumber || p.batchNumber || '';
+          const latestBatchNum = safeBatches[safeBatches.length - 1]?.batchNumber || p.batchNumber || '';
           return {
             ...p,
-            batches,
+            batches: safeBatches,
             stock: totalStock,
             expDate: earliestExp,
             batchNumber: latestBatchNum,
@@ -3474,8 +3577,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addProductBatch = (productId: string, batchData: Omit<ProductBatch, 'id'>) => {
+    if (Number(batchData.stock || 0) < 0) {
+      showToast(
+        language === 'bn' ? 'ব্যাচের স্টক ঋণাত্মক (-) হতে পারবে না!' : 'Batch stock cannot be negative!',
+        'error'
+      );
+      return;
+    }
     const newBatch: ProductBatch = {
       ...batchData,
+      stock: clampNonNegative(batchData.stock, 4),
+      initialStock:
+        batchData.initialStock !== undefined
+          ? clampNonNegative(batchData.initialStock, 4)
+          : clampNonNegative(batchData.stock, 4),
       id: `batch-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       createdBy: currentUser?.id || 'usr-1',
     };
@@ -3484,7 +3599,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (p.id === productId) {
           const existing = p.batches ? [...p.batches] : [];
           existing.push(newBatch);
-          const totalStock = existing.reduce((sum, b) => sum + (Number(b.stock) || 0), 0);
+          const totalStock = clampNonNegative(
+            existing.reduce((sum, b) => sum + (Number(b.stock) || 0), 0),
+            4
+          );
           const activeBatches = existing.filter(b => Number(b.stock) > 0 && b.expDate);
           activeBatches.sort((a, b) => a.expDate.localeCompare(b.expDate));
           const earliestExp = activeBatches[0]?.expDate || p.expDate || '';
@@ -3608,6 +3726,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       created.push({
         ...p,
+        stock: clampNonNegative(p.stock, 4),
+        batches: p.batches?.map(b => ({
+          ...b,
+          stock: clampNonNegative(b.stock, 4),
+          initialStock: b.initialStock !== undefined ? clampNonNegative(b.initialStock, 4) : b.initialStock,
+        })),
         id: `prod-${Date.now()}-${idx}`,
         createdBy: currentUser?.id || 'usr-1',
         createdAt: timestamp,
@@ -3648,11 +3772,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return duplicateParty;
     }
 
+    const safeOpening = clampNonNegative(partyData.openingBalance, 2);
     const newParty: Party = {
       ...partyData,
+      openingBalance: safeOpening,
       id: `${partyData.type.toLowerCase()}-${Date.now()}`,
       serialNumber: serial,
-      currentBalance: partyData.openingBalance || 0,
+      currentBalance: safeOpening,
       createdBy: currentUser?.id || 'usr-1',
       createdAt: new Date().toISOString().split('T')[0],
     };
@@ -3667,6 +3793,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateParty = (id: string, updates: Partial<Party>) => {
+    if (
+      (updates.openingBalance !== undefined && Number(updates.openingBalance) < 0) ||
+      (updates.currentBalance !== undefined && Number(updates.currentBalance) < 0)
+    ) {
+      showToast(
+        language === 'bn' ? 'ব্যালেন্স ঋণাত্মক (-) হতে পারবে না!' : 'Balance cannot be negative!',
+        'error'
+      );
+      return;
+    }
     if (updates.serialNumber && updates.serialNumber.trim()) {
       const serial = updates.serialNumber.trim();
       const duplicateParty = findDuplicatePartySerial(serial, parties, id);
@@ -3680,7 +3816,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return;
       }
     }
-    setParties(prev => prev.map(p => (p.id === id ? { ...p, ...updates } : p)));
+    setParties(prev =>
+      prev.map(p =>
+        p.id === id
+          ? {
+              ...p,
+              ...updates,
+              openingBalance:
+                updates.openingBalance !== undefined
+                  ? clampNonNegative(updates.openingBalance, 2)
+                  : p.openingBalance,
+              currentBalance:
+                updates.currentBalance !== undefined
+                  ? clampNonNegative(updates.currentBalance, 2)
+                  : p.currentBalance,
+            }
+          : p
+      )
+    );
     showToast(language === 'bn' ? 'তথ্য আপডেট হয়েছে।' : 'Party details updated.', 'success');
   };
 
@@ -4116,11 +4269,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
+    // Normalize pure Credit / DUE sale so Cash In Hand (wallet) is NEVER increased on credit sale
+    const isPureCreditSale =
+      data.paymentMethod === 'DUE' || data.walletId === 'due' || data.walletId === 'credit';
+    const effectivePaidAmount = isPureCreditSale ? 0 : Math.max(0, Number(data.paidAmount || 0));
+    const effectiveDueAmount = isPureCreditSale
+      ? Math.max(0, Number(data.grandTotal || 0))
+      : Math.max(0, Number(data.dueAmount ?? Math.max(0, Number(data.grandTotal || 0) - effectivePaidAmount)));
+    const effectivePaymentMethod: PaymentMethod =
+      effectivePaidAmount <= 0 && effectiveDueAmount > 0 ? 'DUE' : data.paymentMethod;
+    const effectiveWalletId = effectivePaidAmount > 0 ? (data.walletId || wallets[0]?.id || 'w-cash') : 'due';
+
     // Customer Credit Limit Validation
-    if (data.dueAmount > 0 && data.customerId && data.customerId !== 'walk-in') {
+    if (effectiveDueAmount > 0 && data.customerId && data.customerId !== 'walk-in') {
       const customer = parties.find(p => p.id === data.customerId);
       if (customer) {
-        const creditCheck = checkCustomerCreditLimit(customer, data.dueAmount, installmentSchemes);
+        const creditCheck = checkCustomerCreditLimit(customer, effectiveDueAmount, installmentSchemes);
         if (!creditCheck.isAllowed) {
           showToast(
             language === 'bn'
@@ -4150,12 +4314,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const invDate = data.date || new Date().toISOString().split('T')[0];
     const nowTime = new Date().toLocaleTimeString('en-US', { hour12: false });
-    const selectedWallet = wallets.find(w => w.id === data.walletId);
+    const selectedWallet = effectivePaidAmount > 0 ? wallets.find(w => w.id === effectiveWalletId) : undefined;
 
     let status: 'PAID' | 'PARTIAL' | 'DUE' = 'PAID';
-    if (data.dueAmount > 0 && data.paidAmount > 0) {
+    if (effectiveDueAmount > 0 && effectivePaidAmount > 0) {
       status = 'PARTIAL';
-    } else if (data.paidAmount === 0 && data.dueAmount > 0) {
+    } else if (effectivePaidAmount === 0 && effectiveDueAmount > 0) {
       status = 'DUE';
     }
 
@@ -4175,11 +4339,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       discountType: data.discountType,
       vatAmount: data.vatAmount,
       grandTotal: data.grandTotal,
-      paidAmount: data.paidAmount,
-      dueAmount: data.dueAmount,
-      paymentMethod: data.paymentMethod,
-      walletId: data.walletId,
-      walletName: selectedWallet?.name || (data.walletId === 'due' ? (language === 'bn' ? 'বাকী বিক্রয় (Credit)' : 'Due / Credit Sale') : 'Cash'),
+      paidAmount: effectivePaidAmount,
+      dueAmount: effectiveDueAmount,
+      paymentMethod: effectivePaymentMethod,
+      walletId: effectiveWalletId,
+      walletName:
+        effectivePaidAmount > 0
+          ? (selectedWallet?.name || 'Cash')
+          : (language === 'bn' ? 'বাকী বিক্রয় (Credit)' : 'Due / Credit Sale'),
       status,
       notes: data.notes,
       cashierName: creatorName,
@@ -4275,13 +4442,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     // 2. Update Customer Due balance if there is due
-    if (data.customerId && data.customerId !== 'walk-in' && data.dueAmount > 0 && data.paymentMethod !== 'INSTALLMENT' && !data.isInstallmentSale) {
+    if (data.customerId && data.customerId !== 'walk-in' && effectiveDueAmount > 0 && effectivePaymentMethod !== 'INSTALLMENT' && !data.isInstallmentSale) {
       setParties(prevParties =>
         prevParties.map(p => {
           if (p.id === data.customerId) {
             return {
               ...p,
-              currentBalance: p.currentBalance + data.dueAmount,
+              currentBalance: Number((p.currentBalance + effectiveDueAmount).toFixed(2)),
             };
           }
           return p;
@@ -4289,14 +4456,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     }
 
-    // 3. Increase wallet balance if paid amount > 0
-    if (data.paidAmount > 0 && selectedWallet) {
+    // 3. Increase wallet balance (Cash In Hand) ONLY if actual cash/bank/MFS received (NEVER for DUE/Credit sale)
+    if (effectivePaidAmount > 0 && !isPureCreditSale && selectedWallet) {
       setWallets(prevWallets =>
         prevWallets.map(w => {
-          if (w.id === (data.walletId || selectedWallet.id)) {
+          if (w.id === selectedWallet.id) {
             return {
               ...w,
-              balance: w.balance + data.paidAmount,
+              balance: Number((w.balance + effectivePaidAmount).toFixed(2)),
             };
           }
           return w;
@@ -4305,8 +4472,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     // 4. Always log every sale in Day Book (Transaction Ledger)
-    // - If paidAmount > 0, amount is data.paidAmount (wallet received funds)
-    // - If credit sale (paidAmount = 0), amount is 0 so Money In does NOT increase!
+    // - If effectivePaidAmount > 0, amount is effectivePaidAmount (wallet received funds)
+    // - If credit sale (effectivePaidAmount = 0), amount is 0 so Cash In Hand / Money In does NOT increase!
     const dayBookEntry: DayBookEntry = {
       id: `db-${Date.now()}`,
       voucherNo: invNum,
@@ -4316,15 +4483,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       partyId: data.customerId,
       partyName: data.customerName,
       partyType: 'CUSTOMER',
-      amount: Number(data.paidAmount || 0), // ONLY the actual received amount! (0 if credit)
-      walletId: data.paidAmount > 0 ? (data.walletId || selectedWallet?.id || 'w-cash') : 'due',
-      walletName: data.paidAmount > 0 ? (selectedWallet?.name || 'Cash') : 'Credit / বাকি',
+      amount: effectivePaidAmount, // ONLY actual received cash/bank/MFS! (0 if credit)
+      walletId: effectivePaidAmount > 0 && selectedWallet ? selectedWallet.id : 'due',
+      walletName: effectivePaidAmount > 0 && selectedWallet ? selectedWallet.name : 'Credit / বাকি',
       referenceNo: invNum,
       remarks: data.notes 
         ? `Sale to ${data.customerName} (${data.notes})` 
-        : data.paidAmount > 0
-          ? `POS Sale receipt from ${data.customerName} (Total: ৳${data.grandTotal.toLocaleString()}, Received: ৳${data.paidAmount.toLocaleString()}${data.dueAmount > 0 ? `, Due: ৳${data.dueAmount.toLocaleString()}` : ''})`
-          : `Credit Sale / বাকি বিক্রয় to ${data.customerName} (Total: ৳${data.grandTotal.toLocaleString()}, Due: ৳${data.dueAmount.toLocaleString()})`,
+        : effectivePaidAmount > 0
+          ? `POS Sale receipt from ${data.customerName} (Total: ৳${data.grandTotal.toLocaleString()}, Received: ৳${effectivePaidAmount.toLocaleString()}${effectiveDueAmount > 0 ? `, Due: ৳${effectiveDueAmount.toLocaleString()}` : ''})`
+          : `Credit Sale / বাকি বিক্রয় to ${data.customerName} (Total: ৳${data.grandTotal.toLocaleString()}, Due: ৳${effectiveDueAmount.toLocaleString()})`,
       createdBy: currentUser?.id || 'usr-1',
       createdAt: `${invDate} ${nowTime}`,
     };
@@ -4486,14 +4653,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     }
 
-    // 4. Revert wallet balance if paid amount was received
-    if (inv.paidAmount > 0 && inv.walletId) {
+    // 4. Revert wallet balance ONLY if actual cash/bank/MFS was received (never for pure DUE/Credit sales)
+    if (
+      inv.paidAmount > 0 &&
+      inv.paymentMethod !== 'DUE' &&
+      inv.walletId &&
+      inv.walletId !== 'due' &&
+      inv.walletId !== 'credit'
+    ) {
       setWallets(prevWallets =>
         prevWallets.map(w => {
           if (w.id === inv.walletId) {
             return {
               ...w,
-              balance: Math.max(0, w.balance - inv.paidAmount),
+              balance: Math.max(0, Number((w.balance - inv.paidAmount).toFixed(2))),
             };
           }
           return w;
@@ -5220,7 +5393,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (w.id === returnData.refundWalletId) {
             return {
               ...w,
-              balance: Number((w.balance - cashRefunded).toFixed(2)),
+              balance: Math.max(0, Number((w.balance - cashRefunded).toFixed(2))),
             };
           }
           return w;
@@ -5659,10 +5832,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const purDate = data.date || new Date().toISOString().split('T')[0];
     const nowTime = new Date().toLocaleTimeString('en-US', { hour12: false });
-    const selectedWallet = wallets.find(w => w.id === data.walletId) || wallets[0];
 
-    // Validate wallet balance if paying cash/bank upfront
-    if (data.paidAmount > 0) {
+    // Normalize pure Credit / DUE purchase so Cash In Hand (wallet) is NEVER deducted on credit purchase
+    const isPureCreditPurchase =
+      data.paymentMethod === 'DUE' || data.walletId === 'credit' || data.walletId === 'due';
+    if (!isPureCreditPurchase && Number(data.paidAmount || 0) < 0) {
+      showToast(language === 'bn' ? 'পরিশোধের পরিমাণ ঋণাত্মক হতে পারে না!' : 'Paid amount cannot be negative!', 'error');
+      return null;
+    }
+
+    const effectivePaidAmount = isPureCreditPurchase ? 0 : Math.max(0, Number(data.paidAmount || 0));
+    const effectiveDueAmount = isPureCreditPurchase
+      ? Math.max(0, Number(data.grandTotal || 0))
+      : Math.max(0, Number(data.dueAmount ?? Math.max(0, Number(data.grandTotal || 0) - effectivePaidAmount)));
+    const effectivePaymentMethod: PaymentMethod =
+      effectivePaidAmount <= 0 && effectiveDueAmount > 0 ? 'DUE' : data.paymentMethod;
+    const selectedWallet =
+      effectivePaidAmount > 0
+        ? (wallets.find(w => w.id === data.walletId) || wallets[0])
+        : undefined;
+
+    // Validate wallet balance ONLY if paying actual cash/bank/MFS upfront (NEVER for Credit / DUE purchase)
+    if (effectivePaidAmount > 0) {
       if (!selectedWallet) {
         showToast(
           language === 'bn' ? 'পেমেন্ট ওয়ালেট খুঁজে পাওয়া যায়নি!' : 'Payment wallet not found!',
@@ -5670,11 +5861,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
         return null;
       }
-      if (selectedWallet.balance < data.paidAmount) {
+      if (selectedWallet.balance < effectivePaidAmount) {
         showToast(
           language === 'bn'
-            ? `নির্বাচিত ওয়ালেটে (${selectedWallet.name}) পর্যাপ্ত ব্যালেন্স নেই! বর্তমান ব্যালেন্স: ৳${selectedWallet.balance.toLocaleString()} | পরিশোধ: ৳${data.paidAmount.toLocaleString()}। অনুগ্রহ করে ওয়ালেটে টাকা জমা দিন অথবা বাকি (Credit) হিসেবে এন্ট্রি করুন।`
-            : `Insufficient balance in ${selectedWallet.name}! Available: ৳${selectedWallet.balance.toLocaleString()} | Trying to pay: ৳${data.paidAmount.toLocaleString()}. Please deposit funds or save as credit purchase.`,
+            ? `নির্বাচিত ওয়ালেটে (${selectedWallet.name}) পর্যাপ্ত ব্যালেন্স নেই! বর্তমান ব্যালেন্স: ৳${selectedWallet.balance.toLocaleString()} | পরিশোধ: ৳${effectivePaidAmount.toLocaleString()}। অনুগ্রহ করে ওয়ালেটে টাকা জমা দিন অথবা বাকি (Credit) হিসেবে এন্ট্রি করুন।`
+            : `Insufficient balance in ${selectedWallet.name}! Available: ৳${selectedWallet.balance.toLocaleString()} | Trying to pay: ৳${effectivePaidAmount.toLocaleString()}. Please deposit funds or save as credit purchase.`,
           'error'
         );
         return null;
@@ -5682,9 +5873,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     let status: 'PAID' | 'PARTIAL' | 'DUE' = 'PAID';
-    if (data.dueAmount > 0 && data.paidAmount > 0) {
+    if (effectiveDueAmount > 0 && effectivePaidAmount > 0) {
       status = 'PARTIAL';
-    } else if (data.paidAmount === 0 && data.dueAmount > 0) {
+    } else if (effectivePaidAmount === 0 && effectiveDueAmount > 0) {
       status = 'DUE';
     }
 
@@ -5703,11 +5894,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       discount: data.discount,
       taxAmount: data.taxAmount,
       grandTotal: data.grandTotal,
-      paidAmount: data.paidAmount,
-      dueAmount: data.dueAmount,
-      paymentMethod: data.paymentMethod,
-      walletId: data.walletId || selectedWallet?.id || 'w-cash',
-      walletName: data.paidAmount > 0 ? (selectedWallet?.name || 'Cash') : 'Credit / বাকি',
+      paidAmount: effectivePaidAmount,
+      dueAmount: effectiveDueAmount,
+      paymentMethod: effectivePaymentMethod,
+      walletId: effectivePaidAmount > 0 && selectedWallet ? selectedWallet.id : 'credit',
+      walletName: effectivePaidAmount > 0 && selectedWallet ? selectedWallet.name : 'Credit / বাকি',
       status,
       notes: data.notes,
       createdBy: creatorName,
@@ -5840,13 +6031,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     // 2. Increase supplier due if there is unpaid amount
-    if (data.dueAmount > 0 && data.supplierId) {
+    if (effectiveDueAmount > 0 && data.supplierId) {
       setParties(prevParties =>
         prevParties.map(p => {
           if (p.id === data.supplierId) {
             return {
               ...p,
-              currentBalance: p.currentBalance + data.dueAmount,
+              currentBalance: Number((p.currentBalance + effectiveDueAmount).toFixed(2)),
             };
           }
           return p;
@@ -5854,14 +6045,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     }
 
-    // 3. Deduct paid amount from wallet if paid > 0
-    if (data.paidAmount > 0 && selectedWallet) {
+    // 3. Deduct paid amount from wallet (Cash In Hand) ONLY if paid > 0 (NEVER for Credit / DUE purchase)
+    if (effectivePaidAmount > 0 && !isPureCreditPurchase && selectedWallet) {
       setWallets(prevWallets =>
         prevWallets.map(w => {
-          if (w.id === (data.walletId || selectedWallet.id)) {
+          if (w.id === selectedWallet.id) {
             return {
               ...w,
-              balance: w.balance - data.paidAmount,
+              balance: Math.max(0, Number((w.balance - effectivePaidAmount).toFixed(2))),
             };
           }
           return w;
@@ -5870,8 +6061,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     // 4. Always log every purchase in Day Book (Transaction Ledger)
-    // - If paidAmount > 0, amount is data.paidAmount (wallet deducted funds)
-    // - If credit purchase (paidAmount = 0), amount is 0 so Money Out does NOT increase!
+    // - If effectivePaidAmount > 0, amount is effectivePaidAmount (wallet deducted funds)
+    // - If credit purchase (effectivePaidAmount = 0), amount is 0 so Cash In Hand / Money Out does NOT change!
     const dayBookEntry: DayBookEntry = {
       id: `db-${Date.now()}`,
       voucherNo: billNum,
@@ -5881,15 +6072,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       partyId: data.supplierId,
       partyName: data.supplierName,
       partyType: 'SUPPLIER',
-      amount: Number(data.paidAmount || 0), // ONLY the actual amount paid/deducted from wallet! (0 if credit)
-      walletId: data.paidAmount > 0 ? (data.walletId || selectedWallet?.id || 'w-cash') : 'credit',
-      walletName: data.paidAmount > 0 ? (selectedWallet?.name || 'Cash') : 'Credit / বাকি',
+      amount: effectivePaidAmount, // ONLY actual paid amount deducted from wallet! (0 if credit)
+      walletId: effectivePaidAmount > 0 && selectedWallet ? selectedWallet.id : 'credit',
+      walletName: effectivePaidAmount > 0 && selectedWallet ? selectedWallet.name : 'Credit / বাকি',
       referenceNo: billNum,
       remarks: data.notes 
         ? `Purchase from ${data.supplierName} (${data.notes})` 
-        : data.paidAmount > 0
-          ? `Purchase payment to ${data.supplierName} (Total: ৳${data.grandTotal.toLocaleString()}, Paid: ৳${data.paidAmount.toLocaleString()}${data.dueAmount > 0 ? `, Remaining Due: ৳${data.dueAmount.toLocaleString()}` : ''})`
-          : `Credit Purchase / বাকি ক্রয় from ${data.supplierName} (Total: ৳${data.grandTotal.toLocaleString()}, Due: ৳${data.dueAmount.toLocaleString()})`,
+        : effectivePaidAmount > 0
+          ? `Purchase payment to ${data.supplierName} (Total: ৳${data.grandTotal.toLocaleString()}, Paid: ৳${effectivePaidAmount.toLocaleString()}${effectiveDueAmount > 0 ? `, Remaining Due: ৳${effectiveDueAmount.toLocaleString()}` : ''})`
+          : `Credit Purchase / বাকি ক্রয় from ${data.supplierName} (Total: ৳${data.grandTotal.toLocaleString()}, Due: ৳${effectiveDueAmount.toLocaleString()})`,
       createdBy: currentUser?.id || 'usr-1',
       createdAt: `${purDate} ${nowTime}`,
     };
@@ -6019,14 +6210,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     }
 
-    // 4. Revert wallet balance if paid amount was deducted
-    if (inv.paidAmount > 0 && inv.walletId) {
+    // 4. Revert wallet balance ONLY if actual cash/bank/MFS was paid (never for pure DUE/Credit purchases)
+    if (
+      inv.paidAmount > 0 &&
+      inv.paymentMethod !== 'DUE' &&
+      inv.walletId &&
+      inv.walletId !== 'credit' &&
+      inv.walletId !== 'due'
+    ) {
       setWallets(prevWallets =>
         prevWallets.map(w => {
           if (w.id === inv.walletId) {
             return {
               ...w,
-              balance: w.balance + inv.paidAmount,
+              balance: Number((w.balance + inv.paidAmount).toFixed(2)),
             };
           }
           return w;
@@ -6487,6 +6684,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
+    // Strict stock availability check: never allow returning more stock than currently available in hand
+    const requestedBaseByProduct = new Map<string, number>();
+    for (const item of returnData.items) {
+      const prod = products.find(p => p.id === item.productId);
+      if (!prod) continue;
+      const itemBaseQty = getBaseQuantity(
+        {
+          quantity: item.returnQuantity,
+          unit: item.unit,
+          conversionFactor: item.conversionFactor,
+          baseQuantity: item.baseQuantity,
+        },
+        prod
+      );
+      requestedBaseByProduct.set(
+        prod.id,
+        Number(((requestedBaseByProduct.get(prod.id) || 0) + itemBaseQty).toFixed(4))
+      );
+    }
+    for (const [pid, reqBaseQty] of requestedBaseByProduct.entries()) {
+      const prod = products.find(p => p.id === pid);
+      if (prod && Number(prod.stock || 0) + 1e-6 < reqBaseQty) {
+        showToast(
+          language === 'bn'
+            ? `অপর্যাপ্ত স্টক! "${prod.name}"-এর বর্তমান স্টক ${formatCleanNumber(Number(prod.stock || 0))} ${prod.unit}, কিন্তু রিটার্ন চাওয়া হয়েছে ${formatCleanNumber(reqBaseQty)} ${prod.unit}। স্টক মাইনাস (-) হতে পারবে না।`
+            : `Insufficient stock for "${prod.name}"! Available: ${formatCleanNumber(Number(prod.stock || 0))} ${prod.unit}, requested return: ${formatCleanNumber(reqBaseQty)} ${prod.unit}. Stock cannot go negative.`,
+          'error'
+        );
+        return false;
+      }
+    }
+
     const returnNum = `PRET-2026-${50 + purchaseReturns.length + 1}`;
     const today = new Date().toISOString().split('T')[0];
     const fullTimeStamp = formatDeletionTimestamp();
@@ -6904,7 +7133,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     }
 
-    // 4. Revert wallet balance for actual cash refund only & remove DayBook entry
+    // 4. Revert wallet balance for actual cash refund only (never below 0) & remove DayBook entry
     const cashToRevert =
       targetReturn.cashRefunded !== undefined ? Number(targetReturn.cashRefunded) : Number(targetReturn.totalAmount || 0);
     if (cashToRevert > 0 && targetReturn.refundWalletId && targetReturn.refundWalletId !== 'credit') {
@@ -6913,7 +7142,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (w.id === targetReturn.refundWalletId) {
             return {
               ...w,
-              balance: Number((w.balance - cashToRevert).toFixed(2)),
+              balance: Math.max(0, Number((w.balance - cashToRevert).toFixed(2))),
             };
           }
           return w;
@@ -7055,13 +7284,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
     );
 
-    // 2. Deduct from wallet
+    // 2. Deduct from wallet (never below 0)
     setWallets(prev =>
       prev.map(w => {
         if (w.id === data.walletId) {
           return {
             ...w,
-            balance: w.balance - data.amount,
+            balance: Math.max(0, Number((w.balance - data.amount).toFixed(2))),
           };
         }
         return w;
@@ -7380,6 +7609,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nowTime = new Date().toLocaleTimeString('en-US', { hour12: false });
     const targetWallet = wallets.find(w => w.id === adjData.walletId);
 
+    if (!adjData.amount || Number(adjData.amount) <= 0) {
+      showToast(
+        language === 'bn' ? 'টাকার পরিমাণ ০-এর বেশি হতে হবে!' : 'Amount must be greater than 0!',
+        'error'
+      );
+      return;
+    }
+
     if (adjData.type === 'CASH_WITHDRAW') {
       if (!targetWallet) {
         showToast(
@@ -7407,13 +7644,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: `${today} ${nowTime}`,
     };
 
-    // Update wallet balance
+    // Update wallet balance (never below 0)
     setWallets(prev =>
       prev.map(w => {
         if (w.id === adjData.walletId) {
           return {
             ...w,
-            balance: adjData.type === 'CASH_ADD' ? w.balance + adjData.amount : w.balance - adjData.amount,
+            balance:
+              adjData.type === 'CASH_ADD'
+                ? Number((w.balance + adjData.amount).toFixed(2))
+                : Math.max(0, Number((w.balance - adjData.amount).toFixed(2))),
           };
         }
         return w;
@@ -7474,13 +7714,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
-    // Revert wallet balance
+    // Revert wallet balance (never below 0)
     setWallets(prev =>
       prev.map(w => {
         if (w.id === adj.walletId) {
           return {
             ...w,
-            balance: adj.type === 'CASH_ADD' ? w.balance - adj.amount : w.balance + adj.amount,
+            balance:
+              adj.type === 'CASH_ADD'
+                ? Math.max(0, Number((w.balance - adj.amount).toFixed(2)))
+                : Number((w.balance + adj.amount).toFixed(2)),
           };
         }
         return w;
@@ -7541,14 +7784,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addWallet = (wData: Omit<Wallet, 'id'>) => {
+    if (Number(wData.balance || 0) < 0) {
+      showToast(
+        language === 'bn' ? 'ওয়ালেট ব্যালেন্স ঋণাত্মক (-) হতে পারবে না!' : 'Wallet balance cannot be negative!',
+        'error'
+      );
+      return;
+    }
+    const safeBalance = clampNonNegative(wData.balance, 2);
     const newWallet: Wallet = {
       ...wData,
+      balance: safeBalance,
       id: `w-${Date.now()}`,
       createdBy: currentUser?.id || 'usr-1',
     };
     setWallets(prev => [...prev, newWallet]);
 
-    if (wData.balance > 0) {
+    if (safeBalance > 0) {
       const today = new Date().toISOString().split('T')[0];
       const nowTime = new Date().toLocaleTimeString('en-US', { hour12: false });
       const voucherNo = `OPB-${Date.now().toString().slice(-6)}`;
@@ -7560,7 +7812,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         flow: 'IN',
         partyName: 'প্রারম্ভিক তহবিল (Opening Balance)',
         partyType: 'INTERNAL',
-        amount: wData.balance,
+        amount: safeBalance,
         walletId: newWallet.id,
         walletName: newWallet.name,
         referenceNo: voucherNo,
@@ -7579,7 +7831,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateWallet = (id: string, updates: Partial<Wallet>) => {
-    setWallets(prev => prev.map(w => (w.id === id ? { ...w, ...updates } : w)));
+    if (updates.balance !== undefined && Number(updates.balance) < 0) {
+      showToast(
+        language === 'bn' ? 'ওয়ালেট ব্যালেন্স ঋণাত্মক (-) হতে পারবে না!' : 'Wallet balance cannot be negative!',
+        'error'
+      );
+      return;
+    }
+    setWallets(prev =>
+      prev.map(w =>
+        w.id === id
+          ? {
+              ...w,
+              ...updates,
+              balance: updates.balance !== undefined ? clampNonNegative(updates.balance, 2) : w.balance,
+            }
+          : w
+      )
+    );
     showToast(language === 'bn' ? 'ওয়ালেট তথ্য আপডেট হয়েছে।' : 'Wallet updated.');
   };
 
@@ -7649,8 +7918,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setWallets(prev =>
       prev.map(w => {
-        if (w.id === fromWalletId) return { ...w, balance: w.balance - amount };
-        if (w.id === toWalletId) return { ...w, balance: w.balance + amount };
+        if (w.id === fromWalletId) return { ...w, balance: Math.max(0, Number((w.balance - amount).toFixed(2))) };
+        if (w.id === toWalletId) return { ...w, balance: Number((w.balance + amount).toFixed(2)) };
         return w;
       })
     );
@@ -7747,6 +8016,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return null;
     }
 
+    if (!vData.amount || Number(vData.amount) <= 0) {
+      showToast(
+        language === 'bn' ? 'খরচের পরিমাণ ০-এর বেশি হতে হবে!' : 'Expense amount must be greater than 0!',
+        'error'
+      );
+      return null;
+    }
+
     if (targetWallet.balance < vData.amount) {
       showToast(
         language === 'bn'
@@ -7765,13 +8042,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: `${today} ${nowTime}`,
     };
 
-    // Deduct from wallet
+    // Deduct from wallet (never below 0)
     setWallets(prev =>
       prev.map(w => {
         if (w.id === vData.walletId) {
           return {
             ...w,
-            balance: w.balance - vData.amount,
+            balance: Math.max(0, Number((w.balance - vData.amount).toFixed(2))),
           };
         }
         return w;
@@ -7958,9 +8235,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return;
       }
 
-      // Deduct from wallet
+      // Deduct from wallet (never below 0)
       setWallets(prev =>
-        prev.map(w => (w.id === targetWallet.id ? { ...w, balance: w.balance - settlementAmt } : w))
+        prev.map(w =>
+          w.id === targetWallet.id
+            ? { ...w, balance: Math.max(0, Number((w.balance - settlementAmt).toFixed(2))) }
+            : w
+        )
       );
 
       const today = data.resignedDate || new Date().toISOString().split('T')[0];
@@ -8053,6 +8334,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
+    if (!advData.amount || Number(advData.amount) <= 0) {
+      showToast(
+        language === 'bn' ? 'অগ্রিম বেতনের পরিমাণ ০-এর বেশি হতে হবে!' : 'Advance salary amount must be greater than 0!',
+        'error'
+      );
+      return;
+    }
+
     if (targetWallet.balance < advData.amount) {
       showToast(
         language === 'bn'
@@ -8072,13 +8361,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: `${today} ${nowTime}`,
     };
 
-    // Deduct from wallet
+    // Deduct from wallet (never below 0)
     setWallets(prev =>
       prev.map(w => {
         if (w.id === advData.walletId) {
           return {
             ...w,
-            balance: w.balance - advData.amount,
+            balance: Math.max(0, Number((w.balance - advData.amount).toFixed(2))),
           };
         }
         return w;
@@ -8216,9 +8505,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    // Deduct from wallet
+    // Deduct from wallet (never below 0)
     setWallets(prev =>
-      prev.map(w => (w.id === payment.walletId ? { ...w, balance: w.balance - payment.amount } : w))
+      prev.map(w =>
+        w.id === payment.walletId
+          ? { ...w, balance: Math.max(0, Number((w.balance - payment.amount).toFixed(2))) }
+          : w
+      )
     );
 
     // If first voucher and has advance deduction, mark advance as deducted
@@ -8395,9 +8688,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
-    // 1. Deduct from wallet
+    // 1. Deduct from wallet (always use targetWallet.id & never below 0)
     setWallets(prev =>
-      prev.map(w => (w.id === walletId ? { ...w, balance: w.balance - totalDisbursement } : w))
+      prev.map(w =>
+        w.id === targetWallet.id
+          ? { ...w, balance: Math.max(0, Number((w.balance - totalDisbursement).toFixed(2))) }
+          : w
+      )
     );
 
     // 2. Mark pending advance salaries as deducted

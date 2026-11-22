@@ -436,7 +436,7 @@ export const ProductImportModal: React.FC<ProductImportModalProps> = ({ onClose 
     setTimeout(() => {
       const productsToImport = parsedRows.map(({ csvStock, ...rest }) => ({
         ...rest,
-        stock: importStockFromCsv ? csvStock : 0,
+        stock: importStockFromCsv ? Math.max(0, Number(csvStock || 0)) : 0,
       }));
       bulkImportProducts(productsToImport);
       setImporting(false);

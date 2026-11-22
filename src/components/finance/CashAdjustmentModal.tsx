@@ -27,6 +27,19 @@ export const CashAdjustmentModal: React.FC<CashAdjustmentModalProps> = ({ isOpen
       return;
     }
 
+    const selectedWallet = wallets.find(w => w.id === walletId);
+    if (type === 'WITHDRAW') {
+      if (!selectedWallet || selectedWallet.balance < numAmount) {
+        showToast(
+          language === 'bn'
+            ? `অপর্যাপ্ত ব্যালেন্স! "${selectedWallet?.name || 'Wallet'}"-এ বর্তমান ব্যালেন্স: ৳${(selectedWallet?.balance || 0).toLocaleString()}। ব্যালেন্স মাইনাস (-) হতে পারবে না।`
+            : `Insufficient balance! Available in "${selectedWallet?.name || 'Wallet'}": ৳${(selectedWallet?.balance || 0).toLocaleString()}. Balance cannot go negative.`,
+          'error'
+        );
+        return;
+      }
+    }
+
     adjustCash({
       walletId,
       type,

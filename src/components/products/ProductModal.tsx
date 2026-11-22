@@ -276,6 +276,35 @@ export const ProductModal: React.FC<ProductModalProps> = ({
 
     const pPrice = parseFloat(purchasePrice) || 0;
     const sPrice = parseFloat(salesPrice) || 0;
+    const parsedStock = parseFloat(stock);
+    const parsedDiscount = parseFloat(discount) || 0;
+    const parsedReorder = parseInt(reorderLevel);
+
+    if (pPrice < 0 || sPrice < 0) {
+      showToast(
+        language === 'bn' ? 'ক্রয় বা বিক্রয় মূল্য ঋণাত্মক (-) হতে পারবে না!' : 'Purchase or sales price cannot be negative!',
+        'error'
+      );
+      return;
+    }
+
+    if (Number.isFinite(parsedStock) && parsedStock < 0) {
+      showToast(
+        language === 'bn' ? 'পণ্যের স্টক ঋণাত্মক (-) হতে পারবে না!' : 'Product stock cannot be negative!',
+        'error'
+      );
+      return;
+    }
+
+    if (parsedDiscount < 0 || (Number.isFinite(parsedReorder) && parsedReorder < 0)) {
+      showToast(
+        language === 'bn' ? 'ডিসকাউন্ট বা লো-স্টক লিমিট ঋণাত্মক (-) হতে পারবে না!' : 'Discount or reorder limit cannot be negative!',
+        'error'
+      );
+      return;
+    }
+
+    const safeStock = Math.max(0, Number.isFinite(parsedStock) ? parsedStock : 0);
 
     let updatedBatches: ProductBatch[] | undefined = undefined;
     const cleanExp = expDate.trim() || undefined;
@@ -287,12 +316,13 @@ export const ProductModal: React.FC<ProductModalProps> = ({
           ...productToEdit.batches[0],
           expDate: cleanExp,
           batchNumber: cleanBatch || productToEdit.batches[0].batchNumber,
-          stock: parseInt(stock) || productToEdit.batches[0].stock,
+          stock: stock.trim() !== '' ? safeStock : Math.max(0, Number(productToEdit.batches[0].stock || 0)),
         }];
       } else {
         // When user updates expiry date at product level, synchronize all batches with the new expiry date
         updatedBatches = productToEdit.batches.map((b, idx) => ({
           ...b,
+          stock: Math.max(0, Number(b.stock || 0)),
           expDate: cleanExp,
           batchNumber: (cleanBatch && idx === 0) ? cleanBatch : b.batchNumber,
         }));
@@ -302,8 +332,8 @@ export const ProductModal: React.FC<ProductModalProps> = ({
         id: `batch-${Date.now()}`,
         batchNumber: cleanBatch || 'B-01',
         expDate: cleanExp,
-        stock: parseInt(stock) || 0,
-        initialStock: parseInt(stock) || 0,
+        stock: safeStock,
+        initialStock: safeStock,
         purchaseDate: new Date().toISOString().split('T')[0],
         purchasePrice: pPrice,
         salesPrice: sPrice,
@@ -324,9 +354,9 @@ export const ProductModal: React.FC<ProductModalProps> = ({
       barcode: trimmedBarcode || Date.now().toString(),
       categoryId: categoryId || categories[0]?.id || 'cat-1',
       categoryName: categories.find(c => c.id === categoryId)?.name || 'General',
-      purchasePrice: pPrice,
-      salesPrice: sPrice,
-      discount: parseFloat(discount) || 0,
+      purchasePrice: Math.max(0, pPrice),
+      salesPrice: Math.max(0, sPrice),
+      discount: Math.max(0, parsedDiscount),
       discountType,
       expDate: cleanExp,
       batchNumber: cleanBatch,
@@ -337,11 +367,11 @@ export const ProductModal: React.FC<ProductModalProps> = ({
       dosageForm: isPharmacyMode ? (dosageForm.trim() || undefined) : undefined,
       dosageSchedule: isPharmacyMode ? (dosageSchedule.trim() || undefined) : undefined,
       rackLocation: rackLocation.trim() || undefined,
-      stock: parseFloat(stock) || 0,
+      stock: safeStock,
       unit,
       purchaseUnit: isDualUnitValid ? (purchaseUnit as UnitType) : undefined,
       unitConversion: isDualUnitValid ? convNum : undefined,
-      reorderLevel: parseInt(reorderLevel) || 5,
+      reorderLevel: Math.max(0, Number.isFinite(parsedReorder) ? parsedReorder : 5),
       description: description.trim() || undefined,
       imageUrl: imageUrl.trim() || undefined,
       image: imageUrl.trim() || undefined,
@@ -911,6 +941,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                   </label>
                   <input
                     type="number"
+                    min="0"
                     step="0.01"
                     value={purchasePrice}
                     onChange={e => {
@@ -936,6 +967,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                     </label>
                     <input
                       type="number"
+                      min="0"
                       step="0.01"
                       value={bulkPurchasePrice}
                       onChange={e => {
@@ -962,6 +994,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
                   </label>
                   <input
                     type="number"
+                    min="0"
                     step="0.01"
                     value={salesPrice}
                     onChange={e => setSalesPrice(e.target.value)}
@@ -1040,6 +1073,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
               </label>
               <input
                 type="number"
+                min="0"
                 step="any"
                 value={stock}
                 onChange={e => setStock(e.target.value)}
@@ -1103,6 +1137,7 @@ export const ProductModal: React.FC<ProductModalProps> = ({
               </label>
               <input
                 type="number"
+                min="0"
                 value={reorderLevel}
                 onChange={e => setReorderLevel(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-slate-900 dark:text-white"

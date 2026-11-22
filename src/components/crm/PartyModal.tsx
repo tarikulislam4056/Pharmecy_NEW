@@ -94,6 +94,18 @@ export const PartyModal: React.FC<PartyModalProps> = ({
       return;
     }
 
+    const parsedOpening = parseFloat(openingBalance) || 0;
+    const parsedCreditLimit = parseFloat(creditLimit) || 0;
+    if (parsedOpening < 0 || parsedCreditLimit < 0) {
+      showToast(
+        language === 'bn'
+          ? 'ওপেনিং ব্যালেন্স বা ক্রেডিট লিমিট ঋণাত্মক (-) হতে পারবে না!'
+          : 'Opening balance or credit limit cannot be negative!',
+        'error'
+      );
+      return;
+    }
+
     const payload = {
       type,
       serialNumber: trimmedSerial || undefined,
@@ -102,8 +114,8 @@ export const PartyModal: React.FC<PartyModalProps> = ({
       phone: phone.trim(),
       email: email.trim() || undefined,
       address: address.trim() || undefined,
-      openingBalance: parseFloat(openingBalance) || 0,
-      creditLimit: parseFloat(creditLimit) || 0,
+      openingBalance: Math.max(0, parsedOpening),
+      creditLimit: Math.max(0, parsedCreditLimit),
       bankDetails: bankDetails.trim() || undefined,
       status: 'ACTIVE' as const,
     };
@@ -358,6 +370,8 @@ export const PartyModal: React.FC<PartyModalProps> = ({
               </label>
               <input
                 type="number"
+                min="0"
+                step="any"
                 value={openingBalance}
                 onChange={e => setOpeningBalance(e.target.value)}
                 className="w-full p-2.5 bg-zinc-50 dark:bg-zinc-800 border rounded-lg font-mono font-bold"
@@ -370,6 +384,8 @@ export const PartyModal: React.FC<PartyModalProps> = ({
               </label>
               <input
                 type="number"
+                min="0"
+                step="any"
                 value={creditLimit}
                 onChange={e => setCreditLimit(e.target.value)}
                 className="w-full p-2.5 bg-zinc-50 dark:bg-zinc-800 border rounded-lg font-mono"

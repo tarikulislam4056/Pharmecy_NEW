@@ -159,7 +159,7 @@ export const WalletsView: React.FC = () => {
   const [transferAmount, setTransferAmount] = useState('');
   const [transferNote, setTransferNote] = useState('');
 
-  const totalLiquidAssets = wallets.reduce((sum, w) => sum + w.balance, 0);
+  const totalLiquidAssets = wallets.reduce((sum, w) => sum + Math.max(0, Number(w.balance || 0)), 0);
 
   // -------------------------------------------------------------
   // PRINT HANDLERS FOR WALLETS & ACCOUNTS
@@ -170,10 +170,10 @@ export const WalletsView: React.FC = () => {
       return w.type === targetCategory;
     });
 
-    const totalBank = wallets.filter(w => w.type === 'BANK').reduce((s, w) => s + w.balance, 0);
-    const totalMfs = wallets.filter(w => w.type === 'MFS').reduce((s, w) => s + w.balance, 0);
-    const totalCash = wallets.filter(w => w.type === 'CASH').reduce((s, w) => s + w.balance, 0);
-    const grandTotal = wallets.reduce((s, w) => s + w.balance, 0);
+    const totalBank = wallets.filter(w => w.type === 'BANK').reduce((s, w) => s + Math.max(0, Number(w.balance || 0)), 0);
+    const totalMfs = wallets.filter(w => w.type === 'MFS').reduce((s, w) => s + Math.max(0, Number(w.balance || 0)), 0);
+    const totalCash = wallets.filter(w => w.type === 'CASH').reduce((s, w) => s + Math.max(0, Number(w.balance || 0)), 0);
+    const grandTotal = wallets.reduce((s, w) => s + Math.max(0, Number(w.balance || 0)), 0);
 
     const reportTitle = language === 'bn' 
       ? 'ওয়ালেট ও ব্যাংক অ্যাকাউন্টস ব্যালেন্স স্টেটমেন্ট' 

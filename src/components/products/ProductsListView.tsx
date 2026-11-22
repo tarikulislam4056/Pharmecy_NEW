@@ -484,6 +484,8 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
       return;
     }
 
+    const escCsv = (val: any) => `"${String(val ?? '').replace(/"/g, '""')}"`;
+
     const headers = [
       'Product Name',
       'Bangla Name',
@@ -493,6 +495,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
       ...(isPharmacyMode ? ['Generic'] : []),
       'Brand / Manufacturer',
       ...(isPharmacyMode ? ['Strength', 'Dosage Form', 'Dosage Schedule'] : []),
+      'Batch No',
       'Date Added',
       'Expiry Date',
       'Purchase Price (Tk)',
@@ -506,37 +509,51 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
       'Total Sales Valuation (Tk)',
     ];
 
-    const rows = filteredProducts.map(p => [
-      `"${p.name.replace(/"/g, '""')}"`,
-      `"${(p.nameBn || '').replace(/"/g, '""')}"`,
-      `"${p.sku}"`,
-      `"${p.barcode}"`,
-      `"${p.categoryName || ''}"`,
-      ...(isPharmacyMode ? [`"${p.generic || ''}"`] : []),
-      `"${p.manufacturer || ''}"`,
-      ...(isPharmacyMode ? [`"${p.strength || ''}"`, `"${p.dosageForm || ''}"`, `"${p.dosageSchedule || ''}"`] : []),
-      p.createdAt || '',
-      p.expDate || '',
-      p.purchasePrice,
-      p.salesPrice,
-      p.stock,
-      p.unit,
-      p.purchaseUnit || p.unit,
-      p.unitConversion && p.unitConversion > 1 ? p.unitConversion : 1,
-      p.reorderLevel,
-      (p.stock * p.purchasePrice).toFixed(2),
-      (p.stock * p.salesPrice).toFixed(2),
-    ]);
+    const rows = filteredProducts.map(p => {
+      const batchNoList = Array.from(
+        new Set([
+          ...(p.batchNumber && String(p.batchNumber).trim() ? [String(p.batchNumber).trim()] : []),
+          ...((p.batches || [])
+            .filter(b => b && b.batchNumber && String(b.batchNumber).trim())
+            .map(b => String(b.batchNumber).trim())),
+        ])
+      ).join(' | ');
 
-    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
+      return [
+        escCsv(p.name),
+        escCsv(p.nameBn || ''),
+        escCsv(p.sku || ''),
+        escCsv(p.barcode || ''),
+        escCsv(p.categoryName || ''),
+        ...(isPharmacyMode ? [escCsv(p.generic || '')] : []),
+        escCsv(p.manufacturer || ''),
+        ...(isPharmacyMode ? [escCsv(p.strength || ''), escCsv(p.dosageForm || ''), escCsv(p.dosageSchedule || '')] : []),
+        escCsv(batchNoList),
+        escCsv(p.createdAt || ''),
+        escCsv(p.expDate || ''),
+        p.purchasePrice,
+        p.salesPrice,
+        p.stock,
+        escCsv(p.unit || ''),
+        escCsv(p.purchaseUnit || p.unit || ''),
+        p.unitConversion && p.unitConversion > 1 ? p.unitConversion : 1,
+        p.reorderLevel,
+        (Number(p.stock || 0) * Number(p.purchasePrice || 0)).toFixed(2),
+        (Number(p.stock || 0) * Number(p.salesPrice || 0)).toFixed(2),
+      ];
+    });
+
+    const csvString = '\uFEFF' + [headers.map(escCsv).join(','), ...rows.map(e => e.join(','))].join('\n');
+    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
+    link.setAttribute('href', url);
     link.setAttribute('download', `Product_Directory_${startDate || 'all'}_to_${endDate || 'all'}_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    showToast(language === 'bn' ? 'CSV ফাইল ডাউনলোড সম্পন্ন হয়েছে।' : 'CSV exported successfully.');
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast(language === 'bn' ? 'Batch No সহ CSV ফাইল ডাউনলোড সম্পন্ন হয়েছে।' : 'CSV exported successfully with Batch No.');
   };
 
   const handlePrintBarcodes = () => {
