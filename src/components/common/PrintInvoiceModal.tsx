@@ -132,7 +132,7 @@ function renderInvoiceItemName(item: any, isPharmacyMode = false, compactNameOnl
 }
 
 export const PrintInvoiceModal: React.FC = () => {
-  const { printableDoc, closePrintModal, companySettings, language, parties, showToast } = useApp();
+  const { printableDoc, closePrintModal, companySettings, language, parties, categories, showToast } = useApp();
 
   // Resolve default print format directly from Company Settings
   const resolveDefaultFormat = (): 'A4' | 'POS_80MM' | 'XPRINTER_80MM' => {
@@ -326,9 +326,9 @@ export const PrintInvoiceModal: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 overflow-y-auto print:p-0 print:bg-white print:static">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 overflow-y-auto print:block print:p-0 print:bg-white print:static print:overflow-visible print:h-auto">
       {/* Modal Container */}
-      <div className="relative w-full max-w-4xl bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-zinc-200 dark:border-zinc-800 flex flex-col max-h-[95vh] overflow-hidden print:max-h-none print:shadow-none print:border-none print:w-full print:max-w-none">
+      <div className="relative w-full max-w-4xl bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-zinc-200 dark:border-zinc-800 flex flex-col max-h-[95vh] overflow-hidden print:block print:max-h-none print:h-auto print:overflow-visible print:shadow-none print:border-none print:w-full print:max-w-none">
         
         {/* Action Header - Hidden on Print */}
         <div className="no-print flex flex-wrap items-center justify-between gap-2.5 px-3 sm:px-5 py-2.5 sm:py-3 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-850">
@@ -579,8 +579,8 @@ export const PrintInvoiceModal: React.FC = () => {
         </div>
 
         {/* Document Body Viewport */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-zinc-100 dark:bg-zinc-950 flex justify-center print:p-0 print:bg-white print:overflow-visible">
-          <div ref={printContentRef} className="printable-document-container w-full flex justify-center">
+        <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-zinc-100 dark:bg-zinc-950 flex justify-center print:block print:p-0 print:bg-white print:overflow-visible print:h-auto">
+          <div ref={printContentRef} className="printable-document-container w-full flex justify-center print:block">
           {/* ========================================================================= */}
           {/* FORMAT 1: 80MM POS THERMAL RECEIPT */}
           {/* ========================================================================= */}
@@ -3524,141 +3524,179 @@ export const PrintInvoiceModal: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <div className={`printable-report w-full ${printOrientation === 'LANDSCAPE' ? 'max-w-[1200px]' : 'max-w-[950px]'} bg-white text-black p-8 md:p-10 shadow-xl border border-zinc-200 rounded-sm font-sans flex flex-col justify-between min-h-[1080px] print:shadow-none print:border-none print:p-6 print:w-full print:max-w-none print:min-h-screen`}>
-                <div>
-                  {/* Top Header */}
-                  <div className="flex justify-between items-start border-b-2 border-zinc-900 pb-3 mb-4">
-                    <div className="flex items-start gap-3">
-                      {companySettings.logoUrl ? (
-                        <img
-                          src={companySettings.logoUrl}
-                          alt={companySettings.name || 'Store Logo'}
-                          className="h-12 w-auto object-contain shrink-0"
-                          onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
-                        />
-                      ) : (
-                        <div
-                          className="px-2.5 py-1.5 flex items-center justify-center rounded-xs"
-                          style={{ backgroundColor: invoiceTheme.primary, color: invoiceTheme.textColor }}
-                        >
-                          <span className="text-base font-serif font-black tracking-wider">
-                            {companySettings.name ? companySettings.name.slice(0, 3).toUpperCase() : 'POS'}
-                          </span>
-                        </div>
-                      )}
-                      <div>
-                        <h1 className="text-xl font-bold uppercase tracking-wider text-black font-serif">
-                          {companySettings.name || 'DokanPro ERP'}
-                        </h1>
-                        {companySettings.nameBn && (
-                          <p className="text-xs text-zinc-700 font-bold">{companySettings.nameBn}</p>
-                        )}
-                        {companySettings.address && (
-                          <p className="text-xs text-zinc-700">{companySettings.address}</p>
-                        )}
-                        {companySettings.phone && (
-                          <p className="text-xs text-zinc-700">
-                            Phone: {companySettings.phone} {companySettings.email ? `• ${companySettings.email}` : ''}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="text-right">
-                      <div className="text-xs text-zinc-800 font-semibold">
-                        Period: {data.period || 'All Time'}
-                      </div>
-                      <div className="text-xs text-zinc-700 mt-1">
-                        Date: {data.generatedDate || printToday}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Centered Report Title Banner */}
-                  <div className="text-center my-4">
-                    <div
-                      className="inline-block px-8 py-2 text-base md:text-lg font-black tracking-widest uppercase font-serif rounded-xs shadow-xs"
-                      style={{ backgroundColor: invoiceTheme.primary, color: invoiceTheme.textColor }}
-                    >
-                      {data.reportHeading || title || 'PRODUCT STOCK & VALUATION REPORT'}
-                    </div>
-                  </div>
-
-                  {/* Products Table */}
-                  <table className="w-full text-left border-collapse text-[8px] mb-6 table-fixed break-words">
-                    <thead>
-                      <tr
-                        className="font-semibold"
+              <div className={`printable-report block w-full ${printOrientation === 'LANDSCAPE' ? 'max-w-[1200px]' : 'max-w-[950px]'} bg-white text-black p-6 md:p-8 shadow-xl border border-zinc-200 rounded-sm font-sans print:block print:shadow-none print:border-none print:p-0 print:w-full print:max-w-none print:min-h-0 print:h-auto`}>
+                {/* Top Header */}
+                <div className="flex justify-between items-start border-b-2 border-zinc-900 pb-2.5 mb-3">
+                  <div className="flex items-start gap-3">
+                    {companySettings.logoUrl ? (
+                      <img
+                        src={companySettings.logoUrl}
+                        alt={companySettings.name || 'Store Logo'}
+                        className="h-11 w-auto object-contain shrink-0"
+                        onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                      />
+                    ) : (
+                      <div
+                        className="px-2.5 py-1.5 flex items-center justify-center rounded-xs"
                         style={{ backgroundColor: invoiceTheme.primary, color: invoiceTheme.textColor }}
                       >
-                        <th className="py-1 px-0.5 text-center w-5 font-medium">#</th>
-                        <th className="py-1 px-0.5 font-medium w-20">Name & SKU</th>
-                        {isPharmacyMode && <th className="py-1 px-0.5 font-medium w-12">Generic</th>}
-                        <th className="py-1 px-0.5 font-medium w-16">Brand</th>
-                        {isPharmacyMode && <th className="py-1 px-0.5 font-medium w-12">Strength</th>}
-                        {isPharmacyMode && <th className="py-1 px-0.5 font-medium w-12">Dosage</th>}
-                        <th className="py-1 px-0.5 font-medium w-12">Cat.</th>
-                        <th className="py-1 px-0.5 font-medium w-10">Rack</th>
-                        <th className="py-1 px-0.5 font-mono font-medium w-14">Barcode</th>
-                        <th className="py-1 px-0.5 font-mono font-medium w-12">Batch</th>
-                        <th className="py-1 px-0.5 font-mono font-medium w-12">Exp</th>
-                        <th className="py-1 px-0.5 text-right font-medium w-10">Cost</th>
-                        <th className="py-1 px-0.5 text-right font-medium w-10">Sales</th>
-                        <th className="py-1 px-0.5 text-center font-medium w-12">Stock</th>
-                        <th className="py-1 px-0.5 text-right font-medium w-12">Asset</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-200">
-                      {data.products && data.products.length > 0 ? (
-                        data.products.map((p: any, idx: number) => {
-                          const cost = Number(p.purchasePrice || 0);
-                          const sale = Number(p.salesPrice || 0);
-                          const stock = Number(p.stock || 0);
-                          const val = cost * stock;
-                          const isLow = stock <= (p.reorderLevel || 0);
-
-                          return (
-                            <tr key={p.id || idx} className="hover:bg-zinc-50">
-                              <td className="py-1 px-0.5 text-center text-zinc-600 font-mono">{idx + 1}</td>
-                              <td className="py-1 px-0.5 font-medium text-black">
-                                <div>{p.name}</div>
-                                {p.sku && <div className="text-[7px] text-zinc-500 font-mono">SKU: {p.sku}</div>}
-                              </td>
-                              {isPharmacyMode && <td className="py-1 px-0.5 text-zinc-700 text-[8px]">{p.generic || '—'}</td>}
-                              <td className="py-1 px-0.5 text-zinc-700 text-[8px]">{p.manufacturer || '—'}</td>
-                              {isPharmacyMode && <td className="py-1 px-0.5 text-zinc-700 text-[8px]">{p.strength || '—'}</td>}
-                              {isPharmacyMode && <td className="py-1 px-0.5 text-zinc-700 text-[8px]">{p.dosageForm || '—'}</td>}
-                              <td className="py-1 px-0.5 text-zinc-700 text-[8px]">{p.categoryName || p.category || '—'}</td>
-                              <td className="py-1 px-0.5 text-zinc-700 text-[8px]">{p.rackLocation || '—'}</td>
-                              <td className="py-1 px-0.5 font-mono text-zinc-600 text-[8px]">{p.barcode || '-'}</td>
-                              <td className="py-1 px-0.5 font-mono text-zinc-600 text-[8px]">{p.batchNumber || '-'}</td>
-                              <td className="py-1 px-0.5 font-mono text-zinc-600 text-[8px]">{p.expDate || '-'}</td>
-                              <td className="py-1 px-0.5 text-right font-mono text-[8px]">৳{cost.toLocaleString()}</td>
-                              <td className="py-1 px-0.5 text-right font-mono font-bold text-[8px]">৳{sale.toLocaleString()}</td>
-                              <td className="py-1 px-0.5 text-center font-mono font-bold text-[8px]">
-                                <span className={stock <= 0 ? 'text-rose-600' : isLow ? 'text-amber-600' : 'text-black'}>
-                                  {formatStockWithUnit(stock, p)}
-                                </span>
-                              </td>
-                              <td className="py-1 px-0.5 text-right font-mono font-medium text-[8px]">৳{val.toLocaleString()}</td>
-                            </tr>
-                          );
-                        })
-                      ) : (
-                        <tr>
-                          <td colSpan={isPharmacyMode ? 15 : 12} className="py-8 text-center text-zinc-500 font-medium">No products to display.</td>
-                        </tr>
+                        <span className="text-base font-serif font-black tracking-wider">
+                          {companySettings.name ? companySettings.name.slice(0, 3).toUpperCase() : 'POS'}
+                        </span>
+                      </div>
+                    )}
+                    <div>
+                      <h1 className="text-lg font-bold uppercase tracking-wider text-black font-serif leading-tight">
+                        {companySettings.name || 'DokanPro ERP'}
+                      </h1>
+                      {companySettings.nameBn && (
+                        <p className="text-xs text-zinc-700 font-bold leading-tight">{companySettings.nameBn}</p>
                       )}
-                    </tbody>
-                    <tfoot>
-                      <tr className="border-t-2 border-zinc-900 font-bold text-black" style={{ backgroundColor: '#f4f4f5' }}>
-                        <td colSpan={isPharmacyMode ? 13 : 10} className="py-2.5 px-3 text-right uppercase tracking-wider font-bold">TOTAL INVENTORY SUMMARY:</td>
-                        <td className="py-2.5 px-0.5 text-center font-mono font-bold text-black">{data.totalUnits?.toLocaleString() || 0}</td>
-                        <td className="py-2.5 px-0.5 text-right font-mono font-bold text-emerald-800 whitespace-nowrap">৳ {Number(data.totalCostValue || 0).toLocaleString()}</td>
-                      </tr>
-                    </tfoot>
-                  </table>
+                      {companySettings.address && (
+                        <p className="text-[11px] text-zinc-700 leading-tight">{companySettings.address}</p>
+                      )}
+                      {companySettings.phone && (
+                        <p className="text-[11px] text-zinc-700 leading-tight">
+                          Phone: {companySettings.phone} {companySettings.email ? `• ${companySettings.email}` : ''}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="text-right text-[11px] leading-snug">
+                    <div className="text-zinc-800 font-semibold">
+                      Period: {data.period || 'All Time'}
+                    </div>
+                    <div className="text-zinc-700 mt-0.5">
+                      Date: {data.generatedDate || printToday}
+                    </div>
+                    <div className="text-zinc-900 font-bold mt-0.5">
+                      Total Items: {(data.products?.length ?? data.totalProducts ?? 0).toLocaleString()}
+                    </div>
+                  </div>
                 </div>
+
+                {/* Centered Report Title Banner */}
+                <div className="text-center my-2.5">
+                  <div
+                    className="inline-block px-6 py-1.5 text-sm md:text-base font-black tracking-widest uppercase font-serif rounded-xs shadow-xs"
+                    style={{ backgroundColor: invoiceTheme.primary, color: invoiceTheme.textColor }}
+                  >
+                    {data.reportHeading || title || 'PRODUCT STOCK & VALUATION REPORT'}
+                  </div>
+                  {data.filterTag && (
+                    <div className="text-[10px] text-zinc-600 mt-1 font-medium">
+                      {data.filterTag}
+                    </div>
+                  )}
+                </div>
+
+                {/* Products Table — flows naturally across unlimited pages with repeating thead and intact rows */}
+                <table className={`w-full text-left border-collapse ${isPharmacyMode ? 'text-[8px]' : 'text-[9px]'} leading-snug mb-3 table-fixed break-words`}>
+                  <thead className="print:table-header-group">
+                    <tr
+                      className="font-semibold"
+                      style={{ backgroundColor: invoiceTheme.primary, color: invoiceTheme.textColor }}
+                    >
+                      <th className="py-1.5 px-1 text-center font-semibold" style={{ width: '3%' }}>#</th>
+                      <th className="py-1.5 px-1 font-semibold" style={{ width: isPharmacyMode ? '15%' : '21%' }}>Name &amp; SKU</th>
+                      {isPharmacyMode && <th className="py-1.5 px-1 font-semibold" style={{ width: '8%' }}>Generic</th>}
+                      <th className="py-1.5 px-1 font-semibold" style={{ width: isPharmacyMode ? '8%' : '10%' }}>Brand</th>
+                      {isPharmacyMode && <th className="py-1.5 px-1 font-semibold" style={{ width: '6%' }}>Strength</th>}
+                      {isPharmacyMode && <th className="py-1.5 px-1 font-semibold" style={{ width: '6%' }}>Dosage</th>}
+                      <th className="py-1.5 px-1 font-semibold" style={{ width: isPharmacyMode ? '7%' : '9%' }}>Category</th>
+                      <th className="py-1.5 px-1 font-semibold" style={{ width: isPharmacyMode ? '5%' : '6%' }}>Rack</th>
+                      <th className="py-1.5 px-1 font-mono font-semibold" style={{ width: isPharmacyMode ? '8%' : '10%' }}>Barcode</th>
+                      <th className="py-1.5 px-1 font-mono font-semibold" style={{ width: isPharmacyMode ? '6%' : '8%' }}>Batch</th>
+                      <th className="py-1.5 px-1 font-mono font-semibold" style={{ width: isPharmacyMode ? '6%' : '7%' }}>Exp</th>
+                      <th className="py-1.5 px-1 text-right font-semibold" style={{ width: isPharmacyMode ? '5%' : '6%' }}>Cost</th>
+                      <th className="py-1.5 px-1 text-right font-semibold" style={{ width: isPharmacyMode ? '5%' : '6%' }}>Sales</th>
+                      <th className="py-1.5 px-1 text-center font-semibold" style={{ width: isPharmacyMode ? '6%' : '7%' }}>Stock</th>
+                      <th className="py-1.5 px-1 text-right font-semibold" style={{ width: isPharmacyMode ? '6%' : '7%' }}>Asset</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-200">
+                    {data.products && data.products.length > 0 ? (
+                      data.products.map((p: any, idx: number) => {
+                        const cost = Number(p.purchasePrice || 0);
+                        const sale = Number(p.salesPrice || 0);
+                        const stock = Number(p.stock || 0);
+                        const val = cost * stock;
+                        const isLow = stock <= (p.reorderLevel || 0);
+                        const resolvedCat =
+                          p.categoryName ||
+                          (p.categoryId ? categories.find((c) => c.id === p.categoryId)?.name : undefined) ||
+                          p.category ||
+                          '—';
+                        const batchList = Array.from(
+                          new Set([
+                            ...(p.batchNumber && String(p.batchNumber).trim() ? [String(p.batchNumber).trim()] : []),
+                            ...((p.batches || [])
+                              .map((b: any) => (b?.batchNumber ? String(b.batchNumber).trim() : ''))
+                              .filter(Boolean)),
+                          ])
+                        );
+                        const batchText = batchList.length > 0 ? batchList.join(', ') : '-';
+                        const expList = Array.from(
+                          new Set([
+                            ...(p.expDate && String(p.expDate).trim() ? [String(p.expDate).trim()] : []),
+                            ...((p.batches || [])
+                              .map((b: any) => (b?.expDate ? String(b.expDate).trim() : ''))
+                              .filter(Boolean)),
+                          ])
+                        );
+                        const expText = expList.length > 0 ? expList[0] : '-';
+
+                        return (
+                          <tr
+                            key={p.id || idx}
+                            className="hover:bg-zinc-50 border-b border-zinc-200"
+                            style={{ breakInside: 'avoid', pageBreakInside: 'avoid' }}
+                          >
+                            <td className="py-1 px-1 text-center text-zinc-600 font-mono align-top">{idx + 1}</td>
+                            <td className="py-1 px-1 font-medium text-black align-top">
+                              <div className="leading-tight break-words">{p.name}</div>
+                              {p.sku && <div className="text-[7.5px] text-zinc-500 font-mono leading-tight">SKU: {p.sku}</div>}
+                            </td>
+                            {isPharmacyMode && <td className="py-1 px-1 text-zinc-700 align-top break-words">{p.generic || '—'}</td>}
+                            <td className="py-1 px-1 text-zinc-700 align-top break-words">{p.manufacturer || '—'}</td>
+                            {isPharmacyMode && <td className="py-1 px-1 text-zinc-700 align-top break-words">{p.strength || '—'}</td>}
+                            {isPharmacyMode && <td className="py-1 px-1 text-zinc-700 align-top break-words">{p.dosageForm || '—'}</td>}
+                            <td className="py-1 px-1 text-zinc-700 align-top break-words">{resolvedCat}</td>
+                            <td className="py-1 px-1 text-zinc-700 align-top break-words">{p.rackLocation || '—'}</td>
+                            <td className="py-1 px-1 font-mono text-zinc-600 align-top break-all">{p.barcode || '-'}</td>
+                            <td className="py-1 px-1 font-mono text-zinc-600 align-top break-words">{batchText}</td>
+                            <td className="py-1 px-1 font-mono text-zinc-600 align-top whitespace-nowrap">{expText}</td>
+                            <td className="py-1 px-1 text-right font-mono align-top whitespace-nowrap">৳{cost.toLocaleString()}</td>
+                            <td className="py-1 px-1 text-right font-mono font-bold align-top whitespace-nowrap">৳{sale.toLocaleString()}</td>
+                            <td className="py-1 px-1 text-center font-mono font-bold align-top">
+                              <span className={stock <= 0 ? 'text-rose-600' : isLow ? 'text-amber-600' : 'text-black'}>
+                                {formatStockWithUnit(stock, p)}
+                              </span>
+                            </td>
+                            <td className="py-1 px-1 text-right font-mono font-medium align-top whitespace-nowrap">৳{val.toLocaleString()}</td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={isPharmacyMode ? 15 : 12} className="py-8 text-center text-zinc-500 font-medium">No products to display.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                  <tfoot style={{ display: 'table-row-group' }}>
+                    <tr
+                      className="border-t-2 border-zinc-900 font-bold text-black"
+                      style={{ backgroundColor: '#f4f4f5', breakInside: 'avoid', pageBreakInside: 'avoid' }}
+                    >
+                      <td colSpan={isPharmacyMode ? 13 : 10} className="py-2 px-2 text-right uppercase tracking-wider font-bold">
+                        TOTAL INVENTORY SUMMARY ({(data.products?.length ?? data.totalProducts ?? 0).toLocaleString()} Items):
+                      </td>
+                      <td className="py-2 px-1 text-center font-mono font-bold text-black">{Number(data.totalUnits || 0).toLocaleString()}</td>
+                      <td className="py-2 px-1 text-right font-mono font-bold text-emerald-800 whitespace-nowrap">৳{Number(data.totalCostValue || 0).toLocaleString()}</td>
+                    </tr>
+                  </tfoot>
+                </table>
               </div>
             )
           )}

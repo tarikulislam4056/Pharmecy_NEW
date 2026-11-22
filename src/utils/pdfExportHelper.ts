@@ -67,14 +67,31 @@ export async function exportElementToPdf(
       targetElement.classList.contains('printable-receipt') ||
       targetElement.offsetWidth <= 420;
 
+    const isReport = targetElement.classList.contains('printable-report');
+    const estimatedHeight = Math.max(targetElement.scrollHeight || 1000, 1000);
+    // Keep canvas safely within browser height limits (~14,500px) so large lists never truncate
+    const safeScale = isThermal
+      ? 2.5
+      : Math.min(2.2, Math.max(0.5, Number((14500 / estimatedHeight).toFixed(2))));
+
+    interface MeasuredTablePagination {
+      clonedHeight: number;
+      tableTop: number;
+      tableBottom: number;
+      theadTop: number;
+      theadHeight: number;
+      rowBottoms: number[];
+    }
+    let measuredTable: MeasuredTablePagination | null = null;
+
     const canvas = await html2canvas(targetElement, {
-      scale: 2.5,
+      scale: safeScale,
       useCORS: true,
       allowTaint: true,
       logging: false,
       backgroundColor: '#ffffff',
-      windowWidth: isThermal ? 400 : (isLandscape ? 1200 : 1200),
-      windowHeight: targetElement.scrollHeight + 100,
+      windowWidth: isThermal ? 400 : (isLandscape ? 1200 : 900),
+      windowHeight: estimatedHeight + 400,
       scrollX: 0,
       scrollY: 0,
       onclone: (clonedDoc, clonedEl) => {
@@ -120,26 +137,71 @@ export async function exportElementToPdf(
           }
         });
 
-        // 4. Force solid white background and crisp layout for clone
+        // 4. Force solid white background, block layout, and exact A4 width on clone
         if (clonedEl) {
           clonedEl.style.backgroundColor = '#ffffff';
           clonedEl.style.color = '#000000';
           clonedEl.style.margin = '0 auto';
           clonedEl.style.boxShadow = 'none';
           clonedEl.style.border = 'none';
+          clonedEl.style.height = 'auto';
+          clonedEl.style.minHeight = '0px';
+          clonedEl.style.maxHeight = 'none';
+          clonedEl.style.overflow = 'visible';
+          if (isReport) {
+            clonedEl.style.display = 'block';
+            clonedEl.style.padding = '8px 12px';
+          }
           if (!isThermal) {
-            clonedEl.style.width = isLandscape ? '1123px' : '794px'; // standard A4 width at 96 DPI
-            clonedEl.style.minWidth = isLandscape ? '1123px' : '794px';
-            clonedEl.style.maxWidth = isLandscape ? '1123px' : '794px';
+            const targetW = isLandscape ? '1123px' : '794px';
+            clonedEl.style.width = targetW;
+            clonedEl.style.minWidth = targetW;
+            clonedEl.style.maxWidth = targetW;
+          }
+
+          // 5. Measure table row boundaries for clean row-aligned multi-page pagination
+          if (!isThermal) {
+            const rootRect = clonedEl.getBoundingClientRect();
+            const tables = Array.from(clonedEl.querySelectorAll('table'));
+            let primaryTable: HTMLTableElement | null = null;
+            let maxRows = 0;
+            tables.forEach((tbl) => {
+              const count = tbl.querySelectorAll('tbody tr').length;
+              if (count > maxRows) {
+                maxRows = count;
+                primaryTable = tbl;
+              }
+            });
+
+            if (primaryTable && maxRows > 0 && rootRect.height > 0) {
+              const tblRect = (primaryTable as HTMLTableElement).getBoundingClientRect();
+              const theadEl = (primaryTable as HTMLTableElement).querySelector('thead');
+              const theadRect = theadEl ? theadEl.getBoundingClientRect() : null;
+              const rows = Array.from(
+                (primaryTable as HTMLTableElement).querySelectorAll('tbody tr, tfoot tr')
+              );
+              const rowBottoms = rows
+                .map((row) => Math.round(row.getBoundingClientRect().bottom - rootRect.top))
+                .filter((y) => y > 0)
+                .sort((a, b) => a - b);
+
+              measuredTable = {
+                clonedHeight: rootRect.height,
+                tableTop: Math.max(0, tblRect.top - rootRect.top),
+                tableBottom: Math.max(0, tblRect.bottom - rootRect.top),
+                theadTop: theadRect ? Math.max(0, theadRect.top - rootRect.top) : 0,
+                theadHeight: theadRect ? Math.max(0, theadRect.height) : 0,
+                rowBottoms,
+              };
+            }
           }
         }
       },
     });
 
-    const imgData = canvas.toDataURL('image/png', 1.0);
-
     if (isThermal) {
       // 80mm thermal receipt sizing
+      const imgData = canvas.toDataURL('image/png', 1.0);
       const pdfWidth = 80;
       const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
       const pdf = new jsPDF({
@@ -153,28 +215,145 @@ export async function exportElementToPdf(
       return true;
     }
 
-    // Standard A4 PDF generation
+    // Standard A4 PDF generation with clean margins and row-boundary-aware pagination
     const pdf = new jsPDF(isLandscape ? 'l' : 'p', 'mm', 'a4');
     const pdfWidth = pdf.internal.pageSize.getWidth(); // 210mm or 297mm
     const pdfPageHeight = pdf.internal.pageSize.getHeight(); // 297mm or 210mm
-    const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+    const marginMm = 6;
+    const usableWidthMm = pdfWidth - marginMm * 2;
+    const usableHeightMm = pdfPageHeight - marginMm * 2;
+    const canvasPxPerMm = canvas.width / usableWidthMm;
+    const maxPageCanvasPx = Math.floor(usableHeightMm * canvasPxPerMm);
 
-    if (pdfHeight <= pdfPageHeight + 2) {
+    const cropSliceToDataUrl = (startY: number, sliceHeight: number): string => {
+      const safeStart = Math.max(0, Math.min(canvas.height - 1, Math.floor(startY)));
+      const safeHeight = Math.max(1, Math.min(canvas.height - safeStart, Math.ceil(sliceHeight)));
+      const sliceCanvas = document.createElement('canvas');
+      sliceCanvas.width = canvas.width;
+      sliceCanvas.height = safeHeight;
+      const ctx = sliceCanvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+        ctx.drawImage(
+          canvas,
+          0,
+          safeStart,
+          canvas.width,
+          safeHeight,
+          0,
+          0,
+          canvas.width,
+          safeHeight
+        );
+      }
+      return sliceCanvas.toDataURL('image/png', 1.0);
+    };
+
+    if (canvas.height <= maxPageCanvasPx + 4) {
       // Single page document
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight, undefined, 'FAST');
+      const imgData = canvas.toDataURL('image/png', 1.0);
+      const renderedHeightMm = canvas.height / canvasPxPerMm;
+      pdf.addImage(imgData, 'PNG', marginMm, marginMm, usableWidthMm, renderedHeightMm, undefined, 'FAST');
     } else {
-      // Multi-page document
-      let heightLeft = pdfHeight;
-      let position = 0;
+      // Multi-page document: fill page 1 completely up to last fitting row, then continue cleanly on next pages
+      const pxToCanvasY =
+        measuredTable && measuredTable.clonedHeight > 0
+          ? canvas.height / measuredTable.clonedHeight
+          : safeScale;
 
-      pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, pdfHeight, undefined, 'FAST');
-      heightLeft -= pdfPageHeight;
+      const rowBottomsCanvas = measuredTable
+        ? Array.from(new Set(measuredTable.rowBottoms.map((y) => Math.round(y * pxToCanvasY))))
+            .filter((y) => y > 0 && y <= canvas.height)
+            .sort((a, b) => a - b)
+        : [];
 
-      while (heightLeft > 0) {
-        position = -(pdfHeight - heightLeft);
-        pdf.addPage();
-        pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, pdfHeight, undefined, 'FAST');
-        heightLeft -= pdfPageHeight;
+      const theadTopCanvas = measuredTable ? Math.round(measuredTable.theadTop * pxToCanvasY) : 0;
+      const theadHeightCanvas = measuredTable ? Math.round(measuredTable.theadHeight * pxToCanvasY) : 0;
+      const tableTopCanvas = measuredTable ? Math.round(measuredTable.tableTop * pxToCanvasY) : 0;
+      const tableBottomCanvas = measuredTable ? Math.round(measuredTable.tableBottom * pxToCanvasY) : 0;
+
+      const canRepeatThead =
+        Boolean(measuredTable) &&
+        theadHeightCanvas > 4 &&
+        theadHeightCanvas < maxPageCanvasPx * 0.25;
+
+      const theadImgData = canRepeatThead
+        ? cropSliceToDataUrl(theadTopCanvas, theadHeightCanvas)
+        : null;
+      const theadHeightMm = theadHeightCanvas / canvasPxPerMm;
+
+      let currentY = 0;
+      let pageIndex = 0;
+
+      while (currentY < canvas.height - 2) {
+        if (pageIndex > 0) {
+          pdf.addPage();
+        }
+
+        let cursorMmY = marginMm;
+        let availableCanvasPx = maxPageCanvasPx;
+
+        const shouldRepeatHeader =
+          pageIndex > 0 &&
+          Boolean(theadImgData) &&
+          currentY >= tableTopCanvas + theadHeightCanvas &&
+          currentY < tableBottomCanvas - 4;
+
+        if (shouldRepeatHeader && theadImgData) {
+          pdf.addImage(
+            theadImgData,
+            'PNG',
+            marginMm,
+            cursorMmY,
+            usableWidthMm,
+            theadHeightMm,
+            undefined,
+            'FAST'
+          );
+          cursorMmY += theadHeightMm;
+          availableCanvasPx = Math.max(100, availableCanvasPx - theadHeightCanvas);
+        }
+
+        const idealMaxY = Math.min(canvas.height, currentY + availableCanvasPx);
+        let nextY = idealMaxY;
+
+        if (idealMaxY < canvas.height && rowBottomsCanvas.length > 0) {
+          // Pick the deepest row boundary that fits completely within this page
+          let bestRowEnd = -1;
+          for (let i = 0; i < rowBottomsCanvas.length; i++) {
+            const candidate = rowBottomsCanvas[i];
+            if (candidate > currentY + 4 && candidate <= idealMaxY) {
+              bestRowEnd = candidate;
+            } else if (candidate > idealMaxY) {
+              break;
+            }
+          }
+          if (bestRowEnd > currentY) {
+            nextY = bestRowEnd;
+          }
+        }
+
+        const sliceHeight = Math.max(1, nextY - currentY);
+        const sliceDataUrl = cropSliceToDataUrl(currentY, sliceHeight);
+        const sliceHeightMm = sliceHeight / canvasPxPerMm;
+
+        pdf.addImage(
+          sliceDataUrl,
+          'PNG',
+          marginMm,
+          cursorMmY,
+          usableWidthMm,
+          sliceHeightMm,
+          undefined,
+          'FAST'
+        );
+
+        currentY = nextY;
+        pageIndex += 1;
+
+        // Hard safety guard against infinite loops
+        if (pageIndex > 500) break;
       }
     }
 

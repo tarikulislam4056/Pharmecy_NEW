@@ -92,7 +92,23 @@
 
   /* Modal cards and printable documents */
   .printable-document-container,
-  .printable-report,
+  .printable-report {
+    display: block !important;
+    box-shadow: none !important;
+    border-color: #000000 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    margin: 0 auto !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+  }
+
   .printable-invoice,
   .printable-voucher,
   .printable-statement,
@@ -102,29 +118,46 @@
     border-color: #000000 !important;
     width: 100% !important;
     max-width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
     margin: 0 auto !important;
     background: #ffffff !important;
     color: #000000 !important;
+    break-inside: auto !important;
     page-break-inside: auto !important;
   }
 
   table {
     width: 100% !important;
     border-collapse: collapse !important;
+    break-inside: auto !important;
     page-break-inside: auto !important;
   }
 
   tr {
+    break-inside: avoid !important;
     page-break-inside: avoid !important;
+    break-after: auto !important;
     page-break-after: auto !important;
+  }
+
+  td, th {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
   }
 
   thead {
     display: table-header-group !important;
   }
 
+  tbody {
+    display: table-row-group !important;
+  }
+
   tfoot {
-    display: table-footer-group !important;
+    display: table-row-group !important;
   }
 
   /* Force light-mode colors for printing to resolve dark-mode variables rendering black boxes */

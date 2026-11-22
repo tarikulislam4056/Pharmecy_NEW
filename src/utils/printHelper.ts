@@ -41,7 +41,7 @@ export function printElement(
     printFrame.style.position = 'fixed';
     printFrame.style.top = '-10000px';
     printFrame.style.left = '-10000px';
-    printFrame.style.width = isLandscape ? '1400px' : '1000px';
+    printFrame.style.width = isLandscape ? '1123px' : '794px';
     printFrame.style.height = '1000px';
     printFrame.style.border = 'none';
     printFrame.style.zIndex = '-9999';
@@ -94,8 +94,8 @@ export function printElement(
       `
       : `
         @page {
-          size: ${isLandscape ? 'landscape' : 'portrait'};
-          margin: 6mm 8mm;
+          size: ${isLandscape ? 'A4 landscape' : 'A4 portrait'};
+          margin: 8mm 8mm;
         }
         body {
           width: 100% !important;
@@ -103,12 +103,36 @@ export function printElement(
           padding: 0 !important;
           font-size: 12px !important;
         }
-        .printable-invoice, .printable-voucher, .printable-report, .printable-statement {
+        .print-container,
+        .printable-document-container,
+        .printable-report {
+          display: block !important;
           width: 100% !important;
           max-width: 100% !important;
+          height: auto !important;
+          min-height: 0 !important;
+          max-height: none !important;
+          overflow: visible !important;
+          box-shadow: none !important;
+          border: none !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          position: static !important;
+          break-inside: auto !important;
+          page-break-inside: auto !important;
+        }
+        .printable-invoice, .printable-voucher, .printable-statement {
+          width: 100% !important;
+          max-width: 100% !important;
+          height: auto !important;
+          min-height: 0 !important;
+          max-height: none !important;
+          overflow: visible !important;
           box-shadow: none !important;
           border: none !important;
           padding: 0 !important;
+          break-inside: auto !important;
+          page-break-inside: auto !important;
         }
       `;
 
@@ -122,11 +146,37 @@ export function printElement(
         html, body {
           background: #ffffff !important;
           color: #000000 !important;
+          display: block !important;
+          height: auto !important;
+          min-height: 0 !important;
+          max-height: none !important;
+          overflow: visible !important;
           font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
         }
         table {
           width: 100% !important;
           border-collapse: collapse !important;
+          break-inside: auto !important;
+          page-break-inside: auto !important;
+        }
+        thead {
+          display: table-header-group !important;
+        }
+        tbody {
+          display: table-row-group !important;
+        }
+        tfoot {
+          display: table-row-group !important;
+        }
+        tr {
+          break-inside: avoid !important;
+          page-break-inside: avoid !important;
+          break-after: auto !important;
+          page-break-after: auto !important;
+        }
+        td, th {
+          break-inside: avoid !important;
+          page-break-inside: avoid !important;
         }
         .no-print, button, input, select {
           display: none !important;
@@ -161,6 +211,24 @@ export function printElement(
         .border-zinc-300 { border-color: #d4d4d8 !important; }
 
         ${printPageRule}
+
+        @media print {
+          html, body {
+            display: block !important;
+            height: auto !important;
+            min-height: 0 !important;
+            max-height: none !important;
+            overflow: visible !important;
+          }
+          ${printPageRule}
+          thead { display: table-header-group !important; }
+          tbody { display: table-row-group !important; }
+          tfoot { display: table-row-group !important; }
+          tr {
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
+          }
+        }
       </style>
     `;
 
@@ -190,13 +258,16 @@ export function printElement(
     frameDoc.write(fullHtml);
     frameDoc.close();
 
-    // 5. Trigger Print after assets & fonts have settled
+    // 5. Trigger Print after assets, images & layout have settled
     const printWindow = printFrame.contentWindow;
     if (!printWindow) {
       throw new Error('Print frame window not available');
     }
 
+    let printed = false;
     const triggerPrint = () => {
+      if (printed) return;
+      printed = true;
       try {
         if (options.onBeforePrint) options.onBeforePrint();
         printWindow.focus();
@@ -209,10 +280,26 @@ export function printElement(
       }
     };
 
-    // Give browser brief tick to parse styles and render SVG barcodes
-    setTimeout(() => {
-      triggerPrint();
-    }, 150);
+    const images = Array.from(frameDoc.querySelectorAll('img')).filter(img => !img.complete);
+    if (images.length === 0) {
+      setTimeout(() => {
+        printWindow.requestAnimationFrame(() => triggerPrint());
+      }, 200);
+    } else {
+      let remaining = images.length;
+      const onImgDone = () => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          printWindow.requestAnimationFrame(() => triggerPrint());
+        }
+      };
+      images.forEach(img => {
+        img.addEventListener('load', onImgDone, { once: true });
+        img.addEventListener('error', onImgDone, { once: true });
+      });
+      // Safety fallback so print always triggers even if an image stalls
+      setTimeout(triggerPrint, 600);
+    }
 
     return true;
   } catch (error) {
