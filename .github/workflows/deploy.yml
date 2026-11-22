@@ -28,7 +28,8 @@ jobs:
           cp db_config.example.php dist/ 2>/dev/null || true
           rm -f dist/erp_data_snapshot.json dist/erp_local_backup.json dist/database.sql dist/fresh_database.sql dist/db_config.php dist/.cpanel.yml
 
-      - name: 🚀 Sync Code Files via FTP to cPanel (Never Delete or Overwrite Live Data)
+      - name: 🔍 Validate & Prepare FTP Configuration
+        id: ftp_cfg
         env:
           FTP_SERVER: ${{ secrets.FTP_SERVER }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
@@ -36,62 +37,92 @@ jobs:
           FTP_DIR: ${{ secrets.FTP_DIR || '/public_html/' }}
           FTP_PORT: ${{ secrets.FTP_PORT || '21' }}
         run: |
-          # Clean accidental whitespace, CR/LF, or ftp:// prefixes from secrets
           CLEAN_SERVER="$(printf '%s' "$FTP_SERVER" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's|^ftps\?://||' -e 's|/.*$||')"
           CLEAN_USER="$(printf '%s' "$FTP_USERNAME" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-          CLEAN_PASS="$(printf '%s' "$FTP_PASSWORD" | tr -d '\r\n')"
           CLEAN_DIR="$(printf '%s' "${FTP_DIR:-/public_html/}" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
           CLEAN_PORT="$(printf '%s' "${FTP_PORT:-21}" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
-          if [ -z "$CLEAN_SERVER" ] || [ -z "$CLEAN_USER" ] || [ -z "$CLEAN_PASS" ]; then
+          # Ensure server-dir ends with a trailing slash (required by FTP-Deploy-Action)
+          case "$CLEAN_DIR" in
+            */) ;;
+            *) CLEAN_DIR="${CLEAN_DIR}/" ;;
+          esac
+
+          if [ -z "$CLEAN_SERVER" ] || [ -z "$CLEAN_USER" ] || [ -z "$FTP_PASSWORD" ]; then
             echo "⚠️ FTP Secrets are not configured in this repository (${{ github.repository }}):"
             [ -z "$CLEAN_SERVER" ] && echo "  - Missing: FTP_SERVER"
             [ -z "$CLEAN_USER" ] && echo "  - Missing: FTP_USERNAME"
-            [ -z "$CLEAN_PASS" ] && echo "  - Missing: FTP_PASSWORD"
+            [ -z "$FTP_PASSWORD" ] && echo "  - Missing: FTP_PASSWORD"
             if [ "${{ github.repository }}" != "tarikulislam4056/Pharmecy" ]; then
-              echo "ℹ️ Skipping FTP deploy on mirror repository. Configure FTP secrets here or use TARGET_REPO_TOKEN to mirror to tarikulislam4056/Pharmecy."
+              echo "ℹ️ Skipping FTP deploy on mirror repository."
+              echo "should_deploy=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "❌ Please add FTP_SERVER, FTP_USERNAME, and FTP_PASSWORD under Settings -> Secrets and variables -> Actions."
+            echo "❌ Please set FTP_SERVER, FTP_USERNAME, and FTP_PASSWORD in GitHub Secrets."
             exit 1
           fi
 
-          sudo apt-get update && sudo apt-get install -y lftp
+          echo "::add-mask::${CLEAN_SERVER}"
+          echo "::add-mask::${CLEAN_USER}"
+          echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          echo "server=${CLEAN_SERVER}" >> "$GITHUB_OUTPUT"
+          echo "username=${CLEAN_USER}" >> "$GITHUB_OUTPUT"
+          echo "server_dir=${CLEAN_DIR}" >> "$GITHUB_OUTPUT"
+          echo "port=${CLEAN_PORT:-21}" >> "$GITHUB_OUTPUT"
+          echo "✅ FTP configuration validated (port: ${CLEAN_PORT:-21}, target dir: ${CLEAN_DIR})."
 
-          run_lftp_deploy() {
-            local ssl_allow="$1"
-            local ssl_protect="$2"
-            lftp -e "
-              set cmd:fail-exit yes;
-              set ssl:verify-certificate no;
-              set ftp:ssl-allow ${ssl_allow};
-              set ftp:ssl-force false;
-              set ftp:ssl-protect-data ${ssl_protect};
-              set ftp:passive-mode true;
-              set net:timeout 20;
-              set net:max-retries 3;
-              set net:reconnect-interval-base 5;
-              mirror -R --verbose \
-                --exclude-glob erp_data_snapshot.json \
-                --exclude-glob erp_local_backup.json \
-                --exclude-glob database.sql \
-                --exclude-glob fresh_database.sql \
-                --exclude-glob db_config.php \
-                --exclude-glob '.cpanel.yml' \
-                --exclude-glob 'erp_storage/**' \
-                --exclude-glob 'dokanpro_erp_data/**' \
-                --exclude-glob 'backups/**' \
-                ./dist/ \"${CLEAN_DIR}\";
-              bye
-            " -p "$CLEAN_PORT" -u "${CLEAN_USER},${CLEAN_PASS}" "$CLEAN_SERVER"
-          }
+      - name: 🚀 Deploy to cPanel via Explicit FTPS (TLS)
+        id: deploy_ftps
+        if: steps.ftp_cfg.outputs.should_deploy == 'true'
+        continue-on-error: true
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ steps.ftp_cfg.outputs.server }}
+          username: ${{ steps.ftp_cfg.outputs.username }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          port: ${{ steps.ftp_cfg.outputs.port }}
+          protocol: ftps
+          security: loose
+          local-dir: ./dist/
+          server-dir: ${{ steps.ftp_cfg.outputs.server_dir }}
+          dangerous-clean-slate: false
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/node_modules/**
+            **/erp_data_snapshot.json
+            **/erp_local_backup.json
+            **/database.sql
+            **/fresh_database.sql
+            **/db_config.php
+            **/.cpanel.yml
+            erp_storage/**
+            dokanpro_erp_data/**
+            backups/**
 
-          echo "🔐 Deploying to ${CLEAN_SERVER}:${CLEAN_PORT} -> ${CLEAN_DIR} (attempting Explicit FTPS/TLS first)..."
-          if ! run_lftp_deploy "true" "true"; then
-            echo "⚠️ FTPS attempt failed. Retrying with standard FTP (ssl-allow false)..."
-            if ! run_lftp_deploy "false" "false"; then
-              echo "❌ FTP deploy failed with both FTPS and plain FTP. Check the lftp error line above and verify FTP_SERVER, FTP_USERNAME, FTP_PASSWORD, and FTP_DIR in GitHub Secrets."
-              exit 1
-            fi
-          fi
-          echo "✅ Successfully deployed code to cPanel!"
+      - name: 🔁 Fallback Deploy to cPanel via Standard FTP
+        id: deploy_ftp
+        if: steps.ftp_cfg.outputs.should_deploy == 'true' && steps.deploy_ftps.outcome == 'failure'
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ steps.ftp_cfg.outputs.server }}
+          username: ${{ steps.ftp_cfg.outputs.username }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          port: ${{ steps.ftp_cfg.outputs.port }}
+          protocol: ftp
+          local-dir: ./dist/
+          server-dir: ${{ steps.ftp_cfg.outputs.server_dir }}
+          dangerous-clean-slate: false
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/node_modules/**
+            **/erp_data_snapshot.json
+            **/erp_local_backup.json
+            **/database.sql
+            **/fresh_database.sql
+            **/db_config.php
+            **/.cpanel.yml
+            erp_storage/**
+            dokanpro_erp_data/**
+            backups/**
