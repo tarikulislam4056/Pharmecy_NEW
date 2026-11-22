@@ -572,7 +572,7 @@ export const BatchReportView = forwardRef<BatchReportHandle, BatchReportViewProp
             inQty: 0,
             outQty: Number(it.returnQuantity) || 0,
             rate: Number(it.purchasePrice) || 0,
-            total: Number(it.totalRefund) || 0,
+            total: Number(it.totalAmount) || 0,
             runningBalance: 0,
             notes: `Supplier return for batch ${targetBatchNumber}`,
           });

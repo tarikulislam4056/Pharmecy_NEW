@@ -885,14 +885,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
               inQty: 0,
               outQty: Number(it.returnQuantity) || 0,
               rate: Number(it.purchasePrice) || 0,
-              total: Number(it.totalRefund) || 0,
+              total: Number(it.totalAmount) || 0,
             }))
         ),
       ...expiredReturnLogs
         .filter(log => log.productId === selectedProdObj.id && inDateRange(log.date))
         .map(log => ({
           date: log.date,
-          sortTime: new Date(log.createdAt || log.date).getTime(),
+          sortTime: new Date(log.date).getTime(),
           ref: log.batchNumber || 'EXPIRED',
           type: 'EXPIRED_OUT',
           description: `Expired / Loss Write-Off (${log.notes || log.actionType || 'Adjustment'})`,
@@ -968,7 +968,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       });
 
       saleReturns.forEach(ret => {
-        if (ret.customerId === selectedPartyObj.id && ret.totalReturnAmount > 0 && ret.refundMethod === 'DUE') {
+        const dueAdj = Number(ret.partyDueReduced ?? ret.dueAdjusted ?? 0);
+        if (ret.customerId === selectedPartyObj.id && dueAdj > 0) {
           ledgerEntries.push({
             date: ret.date,
             type: 'SALE_RETURN',
@@ -976,8 +977,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             voucherNo: ret.returnNumber,
             remarks: `Sales Return adjusted to due (${ret.items.length} items)`,
             debit: 0,
-            credit: ret.totalReturnAmount,
-            amount: ret.totalReturnAmount,
+            credit: dueAdj,
+            amount: dueAdj,
             walletName: 'Due Adjust',
             createdAt: ret.createdAt || ret.date,
           });
@@ -1005,16 +1006,17 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       });
 
       purchaseReturns.forEach(pret => {
-        if (pret.supplierId === selectedPartyObj.id && pret.totalReturnAmount > 0 && pret.refundMethod === 'DUE') {
+        const dueAdj = Number(pret.partyDueReduced ?? pret.dueAdjusted ?? 0);
+        if (pret.supplierId === selectedPartyObj.id && dueAdj > 0) {
           ledgerEntries.push({
             date: pret.date,
             type: 'PURCHASE_RETURN',
             flow: 'OUT',
             voucherNo: pret.returnNumber,
             remarks: `Purchase Return adjusted to payable (${pret.items.length} items)`,
-            debit: pret.totalReturnAmount,
+            debit: dueAdj,
             credit: 0,
-            amount: pret.totalReturnAmount,
+            amount: dueAdj,
             walletName: 'Due Adjust',
             createdAt: pret.createdAt || pret.date,
           });
@@ -1107,7 +1109,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             const baseQty = getBaseQuantity(it, prod);
             const existing = itemMap.get(it.productId) || {
               productId: it.productId,
-              productName: it.productName || prod?.name || 'Unknown Item',
+              productName: it.name || prod?.name || 'Unknown Item',
               categoryName: prod?.categoryName || '-',
               unit: prod?.unit || it.unit || 'Pcs',
               docCount: 0,
