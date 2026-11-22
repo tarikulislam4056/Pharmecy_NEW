@@ -12,6 +12,12 @@ import {
 } from '../../utils/permissions';
 import { getBaseQuantity, formatStockWithUnit, formatCleanNumber } from '../../utils/unitConversion';
 import {
+  getUnifiedCategoryOptions,
+  matchesCategoryFilter,
+  resolveProductCategoryName,
+  getCategoryLabelByValue,
+} from '../../utils/categoryFilter';
+import {
   BarChart3,
   TrendingUp,
   DollarSign,
@@ -82,6 +88,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
   const batchReportRef = useRef<BatchReportHandle>(null);
 
   const isPharmacyMode = companySettings?.businessModule === 'pharmacy';
+
+  const unifiedCategories = useMemo(
+    () => getUnifiedCategoryOptions(categories, products),
+    [categories, products]
+  );
 
   const availableGenerics = useMemo(() => {
     const list = [
@@ -158,7 +169,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
 
   const filteredStockSummaryProducts = useMemo(() => {
     return products.filter(prod => {
-      if (summaryCategoryId !== 'ALL' && prod.categoryId !== summaryCategoryId) return false;
+      if (!matchesCategoryFilter(prod, summaryCategoryId, categories)) return false;
       if (isPharmacyMode && summaryGeneric !== 'ALL' && (!prod.generic || prod.generic.trim().toLowerCase() !== summaryGeneric.trim().toLowerCase())) return false;
       if (summaryManufacturer !== 'ALL' && (!prod.manufacturer || prod.manufacturer.trim().toLowerCase() !== summaryManufacturer.trim().toLowerCase())) return false;
       if (summarySearch.trim()) {
@@ -176,7 +187,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       }
       return true;
     });
-  }, [products, summaryCategoryId, summaryGeneric, summaryManufacturer, summarySearch, isPharmacyMode]);
+  }, [products, categories, summaryCategoryId, summaryGeneric, summaryManufacturer, summarySearch, isPharmacyMode]);
 
   // Low Stock Report States & Filters
   const [lowStockCategoryId, setLowStockCategoryId] = useState<string>('ALL');
@@ -220,7 +231,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       const minLevel = prod.reorderLevel !== undefined && Number(prod.reorderLevel) > 0 ? Number(prod.reorderLevel) : 5;
       if (stock > minLevel) return false;
 
-      if (lowStockCategoryId !== 'ALL' && prod.categoryId !== lowStockCategoryId) return false;
+      if (!matchesCategoryFilter(prod, lowStockCategoryId, categories)) return false;
 
       if (lowStockSupplierId !== 'ALL') {
         const target = lowStockSupplierId.trim().toLowerCase();
@@ -244,7 +255,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
 
       return true;
     }).sort((a, b) => Number(a.stock || 0) - Number(b.stock || 0));
-  }, [products, productSuppliersMap, lowStockCategoryId, lowStockSupplierId, lowStockSearch, isPharmacyMode]);
+  }, [products, categories, productSuppliersMap, lowStockCategoryId, lowStockSupplierId, lowStockSearch, isPharmacyMode]);
 
   const handleExportLowStockCSV = () => {
     if (!canUserExportReportCsv(currentUser)) {
@@ -274,7 +285,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       const stock = Number(p.stock || 0);
       const minLevel = p.reorderLevel !== undefined && Number(p.reorderLevel) > 0 ? Number(p.reorderLevel) : 5;
       const deficit = Math.max(0, minLevel - stock);
-      const cat = categories.find(c => c.id === p.categoryId)?.name || p.categoryName || 'General';
+      const cat = resolveProductCategoryName(p, categories);
       const supplier = p.manufacturer || p.batches?.[0]?.supplierName || 'General Supplier';
       return [
         p.id,
@@ -419,7 +430,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
   const itemWiseSalesData = useMemo(() => {
     return products
       .filter(prod => {
-        if (salesCategoryId !== 'ALL' && prod.categoryId !== salesCategoryId) return false;
+        if (!matchesCategoryFilter(prod, salesCategoryId, categories)) return false;
         if (isPharmacyMode && salesGeneric !== 'ALL' && (!prod.generic || prod.generic.trim().toLowerCase() !== salesGeneric.trim().toLowerCase())) return false;
         if (salesManufacturer !== 'ALL' && (!prod.manufacturer || prod.manufacturer.trim().toLowerCase() !== salesManufacturer.trim().toLowerCase())) return false;
         if (salesSearch.trim()) {
@@ -473,7 +484,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       })
       .filter(item => !salesOnlyActive || item.soldQty > 0)
       .sort((a, b) => b.revenue - a.revenue || b.soldQty - a.soldQty);
-  }, [products, filteredSalesInvoices, salesCategoryId, salesGeneric, salesManufacturer, salesSearch, salesOnlyActive, isPharmacyMode]);
+  }, [products, categories, filteredSalesInvoices, salesCategoryId, salesGeneric, salesManufacturer, salesSearch, salesOnlyActive, isPharmacyMode]);
 
   const selectedSalesProduct = useMemo(() => {
     if (salesItemId === 'ALL') return null;
@@ -526,7 +537,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
   const itemWisePurchasesData = useMemo(() => {
     return products
       .filter(prod => {
-        if (purchaseCategoryId !== 'ALL' && prod.categoryId !== purchaseCategoryId) return false;
+        if (!matchesCategoryFilter(prod, purchaseCategoryId, categories)) return false;
         if (isPharmacyMode && purchaseGeneric !== 'ALL' && (!prod.generic || prod.generic.trim().toLowerCase() !== purchaseGeneric.trim().toLowerCase())) return false;
         if (purchaseManufacturer !== 'ALL' && (!prod.manufacturer || prod.manufacturer.trim().toLowerCase() !== purchaseManufacturer.trim().toLowerCase())) return false;
         if (purchaseSearch.trim()) {
@@ -571,7 +582,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       })
       .filter(item => !purchaseOnlyActive || item.purchasedQty > 0)
       .sort((a, b) => b.cost - a.cost || b.purchasedQty - a.purchasedQty);
-  }, [products, filteredPurchaseInvoices, purchaseCategoryId, purchaseGeneric, purchaseManufacturer, purchaseSearch, purchaseOnlyActive, isPharmacyMode]);
+  }, [products, categories, filteredPurchaseInvoices, purchaseCategoryId, purchaseGeneric, purchaseManufacturer, purchaseSearch, purchaseOnlyActive, isPharmacyMode]);
 
   const selectedPurchaseProduct = useMemo(() => {
     if (purchaseItemId === 'ALL') return null;
@@ -624,7 +635,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
   const itemPnlData = useMemo(() => {
     return products
       .filter(prod => {
-        if (pnlCategoryId !== 'ALL' && prod.categoryId !== pnlCategoryId) return false;
+        if (!matchesCategoryFilter(prod, pnlCategoryId, categories)) return false;
         if (isPharmacyMode && pnlGeneric !== 'ALL' && (!prod.generic || prod.generic.trim().toLowerCase() !== pnlGeneric.trim().toLowerCase())) return false;
         if (pnlManufacturer !== 'ALL' && (!prod.manufacturer || prod.manufacturer.trim().toLowerCase() !== pnlManufacturer.trim().toLowerCase())) return false;
         if (pnlSearch.trim()) {
@@ -673,7 +684,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       })
       .filter(item => !pnlOnlyActive || item.soldQty > 0)
       .sort((a, b) => b.revenue - a.revenue || b.profit - a.profit);
-  }, [products, filteredPnlInvoices, pnlCategoryId, pnlGeneric, pnlManufacturer, pnlSearch, pnlOnlyActive, isPharmacyMode]);
+  }, [products, categories, filteredPnlInvoices, pnlCategoryId, pnlGeneric, pnlManufacturer, pnlSearch, pnlOnlyActive, isPharmacyMode]);
 
   const selectedPnlProduct = useMemo(() => {
     if (pnlItemId === 'ALL') return null;
@@ -742,13 +753,13 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
   // -------------------------------------------------------------
   // Category wise sales (Filtered by Date Range)
   const categorySales = useMemo(() => {
-    return categories.map(cat => {
+    return unifiedCategories.map(cat => {
       let totalCatRevenue = 0;
       let totalCatQty = 0;
       filteredSalesInvoices.forEach(inv => {
         inv.items.forEach(it => {
           const p = products.find(prod => prod.id === it.productId);
-          if (p && p.categoryId === cat.id) {
+          if (p && matchesCategoryFilter(p, cat.id, categories)) {
             totalCatRevenue += it.total;
             totalCatQty += getBaseQuantity(it, p);
           }
@@ -760,17 +771,17 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         qty: totalCatQty,
       };
     });
-  }, [categories, filteredSalesInvoices, products]);
+  }, [unifiedCategories, categories, filteredSalesInvoices, products]);
 
   // Category wise purchases (Filtered by Date Range)
   const categoryPurchases = useMemo(() => {
-    return categories.map(cat => {
+    return unifiedCategories.map(cat => {
       let totalCatCost = 0;
       let totalCatQty = 0;
       filteredPurchaseInvoices.forEach(inv => {
         inv.items.forEach(it => {
           const p = products.find(prod => prod.id === it.productId);
-          if (p && p.categoryId === cat.id) {
+          if (p && matchesCategoryFilter(p, cat.id, categories)) {
             totalCatCost += it.total;
             totalCatQty += getBaseQuantity(it, p);
           }
@@ -782,12 +793,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         qty: totalCatQty,
       };
     });
-  }, [categories, filteredPurchaseInvoices, products]);
+  }, [unifiedCategories, categories, filteredPurchaseInvoices, products]);
 
   // Filtered products for Item Ledger selector
   const ledgerFilteredProducts = useMemo(() => {
     return products.filter(p => {
-      if (ledgerCategoryId !== 'ALL' && p.categoryId !== ledgerCategoryId) return false;
+      if (!matchesCategoryFilter(p, ledgerCategoryId, categories)) return false;
       if (ledgerSearch.trim()) {
         const q = ledgerSearch.toLowerCase();
         const match =
@@ -800,10 +811,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       }
       return true;
     });
-  }, [products, ledgerCategoryId, ledgerSearch, isPharmacyMode]);
+  }, [products, categories, ledgerCategoryId, ledgerSearch, isPharmacyMode]);
+
+  // Keep selectedProductId synchronized with the filtered Ledger product list
+  useEffect(() => {
+    if (ledgerFilteredProducts.length === 0) {
+      if (selectedProductId !== '') setSelectedProductId('');
+      return;
+    }
+    if (!ledgerFilteredProducts.some(p => p.id === selectedProductId)) {
+      setSelectedProductId(ledgerFilteredProducts[0].id);
+    }
+  }, [ledgerFilteredProducts, selectedProductId]);
 
   // Selected Product Ledger entries (Filtered consistently by Global Date Range + includes returns)
-  const selectedProdObj = products.find(p => p.id === selectedProductId) || ledgerFilteredProducts[0] || products[0];
+  const selectedProdObj = ledgerFilteredProducts.find(p => p.id === selectedProductId) || ledgerFilteredProducts[0];
   const prodLedgerEntries = useMemo(() => {
     if (!selectedProdObj) return [];
 
@@ -1110,7 +1132,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             const existing = itemMap.get(it.productId) || {
               productId: it.productId,
               productName: it.name || prod?.name || 'Unknown Item',
-              categoryName: prod?.categoryName || '-',
+              categoryName: prod ? resolveProductCategoryName(prod, categories) : '-',
               unit: prod?.unit || it.unit || 'Pcs',
               docCount: 0,
               totalQty: 0,
@@ -1134,7 +1156,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             const existing = itemMap.get(it.productId) || {
               productId: it.productId,
               productName: it.productName || prod?.name || 'Unknown Item',
-              categoryName: prod?.categoryName || '-',
+              categoryName: prod ? resolveProductCategoryName(prod, categories) : '-',
               unit: prod?.unit || it.unit || 'Pcs',
               docCount: 0,
               totalQty: 0,
@@ -1156,7 +1178,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         avgRate: row.totalQty > 0 ? row.totalAmount / row.totalQty : 0,
       }))
       .sort((a, b) => b.totalAmount - a.totalAmount);
-  }, [selectedPartyObj, saleInvoices, purchaseInvoices, products, globalStartDate, globalEndDate]);
+  }, [selectedPartyObj, saleInvoices, purchaseInvoices, products, categories, globalStartDate, globalEndDate]);
 
   // CSV Export Handler (Blob + UTF-8 BOM for Bengali support & safe special characters)
   const handleExportCSV = (reportName: string, headers: string[], rows: (string | number)[][]) => {
@@ -1255,7 +1277,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
           filters: [
             {
               label: language === 'bn' ? 'ক্যাটাগরি' : 'Category',
-              value: lowStockCategoryId === 'ALL' ? (language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories') : (categories.find(c => c.id === lowStockCategoryId)?.name || lowStockCategoryId),
+              value: getCategoryLabelByValue(lowStockCategoryId, categories, products, language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'),
             },
             {
               label: language === 'bn' ? 'সাপ্লায়ার' : 'Supplier',
@@ -1284,7 +1306,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             return {
               name: p.name,
               batchNo: getProductBatchSummary(p),
-              category: categories.find(c => c.id === p.categoryId)?.name || p.categoryName || 'General',
+              category: resolveProductCategoryName(p, categories),
               supplier: p.manufacturer || p.batches?.[0]?.supplierName || 'General Supplier',
               stock,
               minLevel,
@@ -1314,7 +1336,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
           period: globalDateRangeText,
           filters: [
             { label: language === 'bn' ? 'পণ্যের নাম' : 'Item Name', value: selectedProdObj.name },
-            { label: language === 'bn' ? 'ক্যাটাগরি' : 'Category', value: selectedProdObj.categoryName },
+            { label: language === 'bn' ? 'ক্যাটাগরি' : 'Category', value: resolveProductCategoryName(selectedProdObj, categories) },
             { label: language === 'bn' ? 'ব্যাচ নং' : 'Batch No', value: getProductBatchSummary(selectedProdObj) },
             { label: language === 'bn' ? 'বর্তমান স্টক' : 'Current Stock', value: formatStockWithUnit(selectedProdObj.stock, selectedProdObj) },
           ],
@@ -1366,7 +1388,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             period: dateRangeText,
             filters: [
               { label: language === 'bn' ? 'পণ্যের নাম' : 'Product Name', value: selectedSalesProduct.name },
-              { label: language === 'bn' ? 'ক্যাটাগরি' : 'Category', value: selectedSalesProduct.categoryName },
+              { label: language === 'bn' ? 'ক্যাটাগরি' : 'Category', value: resolveProductCategoryName(selectedSalesProduct, categories) },
               { label: language === 'bn' ? 'বারকোড' : 'Barcode', value: selectedSalesProduct.barcode || '-' },
             ],
             kpis: [
@@ -1399,10 +1421,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             filters: [
               {
                 label: language === 'bn' ? 'ক্যাটাগরি' : 'Category',
-                value:
-                  salesCategoryId === 'ALL'
-                    ? (language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories')
-                    : categories.find(c => c.id === salesCategoryId)?.name || salesCategoryId,
+                value: getCategoryLabelByValue(salesCategoryId, categories, products, language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'),
               },
               { label: language === 'bn' ? 'অনুসন্ধান' : 'Search Query', value: salesSearch || (language === 'bn' ? 'সকল আইটেম' : 'None') },
             ],
@@ -1422,7 +1441,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             ],
             rows: itemWiseSalesData.map(i => ({
               productName: i.product.name,
-              categoryName: i.product.categoryName,
+              categoryName: resolveProductCategoryName(i.product, categories),
               barcode: i.product.barcode || '-',
               invoiceCount: i.invoiceCount,
               soldQty: i.soldQty,
@@ -1461,7 +1480,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             period: dateRangeText,
             filters: [
               { label: language === 'bn' ? 'পণ্যের নাম' : 'Product Name', value: selectedPurchaseProduct.name },
-              { label: language === 'bn' ? 'ক্যাটাগরি' : 'Category', value: selectedPurchaseProduct.categoryName },
+              { label: language === 'bn' ? 'ক্যাটাগরি' : 'Category', value: resolveProductCategoryName(selectedPurchaseProduct, categories) },
               { label: language === 'bn' ? 'বারকোড' : 'Barcode', value: selectedPurchaseProduct.barcode || '-' },
             ],
             kpis: [
@@ -1494,10 +1513,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             filters: [
               {
                 label: language === 'bn' ? 'ক্যাটাগরি' : 'Category',
-                value:
-                  purchaseCategoryId === 'ALL'
-                    ? (language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories')
-                    : categories.find(c => c.id === purchaseCategoryId)?.name || purchaseCategoryId,
+                value: getCategoryLabelByValue(purchaseCategoryId, categories, products, language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'),
               },
               { label: language === 'bn' ? 'অনুসন্ধান' : 'Search Query', value: purchaseSearch || (language === 'bn' ? 'সকল আইটেম' : 'None') },
             ],
@@ -1517,7 +1533,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             ],
             rows: itemWisePurchasesData.map(i => ({
               productName: i.product.name,
-              categoryName: i.product.categoryName,
+              categoryName: resolveProductCategoryName(i.product, categories),
               barcode: i.product.barcode || '-',
               billCount: i.billCount,
               purchasedQty: i.purchasedQty,
@@ -1558,7 +1574,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             period: dateRangeText,
             filters: [
               { label: language === 'bn' ? 'পণ্যের নাম' : 'Product Name', value: selectedPnlProduct.name },
-              { label: language === 'bn' ? 'ক্যাটাগরি' : 'Category', value: selectedPnlProduct.categoryName },
+              { label: language === 'bn' ? 'ক্যাটাগরি' : 'Category', value: resolveProductCategoryName(selectedPnlProduct, categories) },
             ],
             kpis: [
               { label: language === 'bn' ? 'মোট বিক্রয় রাজস্ব' : 'Total Revenue', value: totalRev },
@@ -1591,10 +1607,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             filters: [
               {
                 label: language === 'bn' ? 'ক্যাটাগরি' : 'Category',
-                value:
-                  pnlCategoryId === 'ALL'
-                    ? (language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories')
-                    : categories.find(c => c.id === pnlCategoryId)?.name || pnlCategoryId,
+                value: getCategoryLabelByValue(pnlCategoryId, categories, products, language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'),
               },
               { label: language === 'bn' ? 'অনুসন্ধান' : 'Search Query', value: pnlSearch || (language === 'bn' ? 'সকল আইটেম' : 'None') },
             ],
@@ -1616,7 +1629,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             ],
             rows: itemPnlData.map(i => ({
               productName: i.product.name,
-              categoryName: i.product.categoryName,
+              categoryName: resolveProductCategoryName(i.product, categories),
               barcode: i.product.barcode || '-',
               soldQty: i.soldQty,
               revenue: i.revenue,
@@ -1745,7 +1758,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
     if (reportType === 'summary') {
       handleExportCSV('Stock_Summary',
         ['Product Name', ...(isPharmacyMode ? ['Generic'] : []), 'Brand / Manufacturer', 'Category', 'Batch No', 'Barcode', 'In Stock', 'Purchase Price', 'Sales Price', 'Total Cost Value', 'Total Retail Value'],
-        filteredStockSummaryProducts.map(p => [p.name, ...(isPharmacyMode ? [p.generic || '-'] : []), p.manufacturer || '-', p.categoryName, getProductBatchSummary(p), p.barcode || '-', formatStockWithUnit(p.stock, p), p.purchasePrice, p.salesPrice, p.stock * p.purchasePrice, p.stock * p.salesPrice])
+        filteredStockSummaryProducts.map(p => [p.name, ...(isPharmacyMode ? [p.generic || '-'] : []), p.manufacturer || '-', resolveProductCategoryName(p, categories), getProductBatchSummary(p), p.barcode || '-', formatStockWithUnit(p.stock, p), p.purchasePrice, p.salesPrice, p.stock * p.purchasePrice, p.stock * p.salesPrice])
       );
     } else if (reportType === 'ledger') {
       if (!selectedProdObj) {
@@ -1766,7 +1779,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       } else {
         handleExportCSV('Item_Wise_Sales',
           ['Item Name', ...(isPharmacyMode ? ['Generic'] : []), 'Brand / Manufacturer', 'Category', 'Barcode', 'Invoices', 'Units Sold', 'Avg Price', 'Total Revenue'],
-          itemWiseSalesData.map(i => [i.product.name, ...(isPharmacyMode ? [i.product.generic || '-'] : []), i.product.manufacturer || '-', i.product.categoryName, i.product.barcode || '-', i.invoiceCount, i.soldQty, i.avgPrice.toFixed(2), i.revenue])
+          itemWiseSalesData.map(i => [i.product.name, ...(isPharmacyMode ? [i.product.generic || '-'] : []), i.product.manufacturer || '-', resolveProductCategoryName(i.product, categories), i.product.barcode || '-', i.invoiceCount, i.soldQty, i.avgPrice.toFixed(2), i.revenue])
         );
       }
     } else if (reportType === 'item-purchase') {
@@ -1779,7 +1792,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       } else {
         handleExportCSV('Item_Wise_Purchase',
           ['Item Name', ...(isPharmacyMode ? ['Generic'] : []), 'Brand / Manufacturer', 'Category', 'Barcode', 'Bills Count', 'Units Purchased', 'Avg Cost', 'Total Spend'],
-          itemWisePurchasesData.map(i => [i.product.name, ...(isPharmacyMode ? [i.product.generic || '-'] : []), i.product.manufacturer || '-', i.product.categoryName, i.product.barcode || '-', i.billCount, i.purchasedQty, i.avgCost.toFixed(2), i.cost])
+          itemWisePurchasesData.map(i => [i.product.name, ...(isPharmacyMode ? [i.product.generic || '-'] : []), i.product.manufacturer || '-', resolveProductCategoryName(i.product, categories), i.product.barcode || '-', i.billCount, i.purchasedQty, i.avgCost.toFixed(2), i.cost])
         );
       }
     } else if (reportType === 'pnl') {
@@ -1792,7 +1805,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       } else {
         handleExportCSV('Item_Profit_Loss',
           ['Item Name', ...(isPharmacyMode ? ['Generic'] : []), 'Brand / Manufacturer', 'Category', 'Barcode', 'Sold Qty', 'Revenue', 'Cost (COGS)', 'Gross Profit', 'Margin %'],
-          itemPnlData.map(i => [i.product.name, ...(isPharmacyMode ? [i.product.generic || '-'] : []), i.product.manufacturer || '-', i.product.categoryName, i.product.barcode || '-', i.soldQty, i.revenue, i.cogs, i.profit, i.margin])
+          itemPnlData.map(i => [i.product.name, ...(isPharmacyMode ? [i.product.generic || '-'] : []), i.product.manufacturer || '-', resolveProductCategoryName(i.product, categories), i.product.barcode || '-', i.soldQty, i.revenue, i.cogs, i.profit, i.margin])
         );
       }
     } else if (reportType === 'party-ledger') {
@@ -2099,7 +2112,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                     className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium"
                   >
                     <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
-                    {categories.map(c => (
+                    {unifiedCategories.map(c => (
                       <option key={c.id} value={c.id}>
                         {c.name}
                       </option>
@@ -2186,7 +2199,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                         const minLevel = p.reorderLevel !== undefined && Number(p.reorderLevel) > 0 ? Number(p.reorderLevel) : 5;
                         const deficit = Math.max(0, minLevel - stock);
                         const restockCost = deficit * Number(p.purchasePrice || 0);
-                        const catName = categories.find(c => c.id === p.categoryId)?.name || p.categoryName || 'General';
+                        const catName = resolveProductCategoryName(p, categories);
                         const supplierName = p.manufacturer || p.batches?.[0]?.supplierName || 'General Supplier';
                         return (
                           <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
@@ -2218,6 +2231,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                               <button
                                 type="button"
                                 onClick={() => {
+                                  setLedgerCategoryId('ALL');
+                                  setLedgerSearch('');
                                   setSelectedProductId(p.id);
                                   setReportType('ledger');
                                 }}
@@ -2311,7 +2326,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                   className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
                 >
                   <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
-                  {categories.map(c => (
+                  {unifiedCategories.map(c => (
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
                 </select>
@@ -2404,7 +2419,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                           <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{p.generic || '—'}</td>
                         )}
                         <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{p.manufacturer || '—'}</td>
-                        <td className="py-2.5 px-4 text-slate-500">{p.categoryName}</td>
+                        <td className="py-2.5 px-4 text-slate-500">{resolveProductCategoryName(p, categories)}</td>
                         <td className="py-2.5 px-4 font-mono text-[11px] text-slate-500">{getProductBatchSummary(p)}</td>
                         <td className="py-2.5 px-4 text-right font-mono font-bold">
                           <span className={p.stock <= (p.reorderLevel || 5) ? 'text-amber-600' : 'text-slate-700 dark:text-slate-300'}>
@@ -2420,6 +2435,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                           <button
                             type="button"
                             onClick={() => {
+                              setLedgerCategoryId('ALL');
+                              setLedgerSearch('');
                               setSelectedProductId(p.id);
                               setReportType('ledger');
                             }}
@@ -2460,10 +2477,6 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         const totalInQty = prodLedgerEntries.reduce((s, e) => s + e.inQty, 0);
         const totalOutQty = prodLedgerEntries.reduce((s, e) => s + e.outQty, 0);
         const totalLedgerAmount = prodLedgerEntries.reduce((s, e) => s + e.total, 0);
-        const ledgerDropdownOptions =
-          selectedProdObj && !ledgerFilteredProducts.some(p => p.id === selectedProdObj.id)
-            ? [selectedProdObj, ...ledgerFilteredProducts]
-            : ledgerFilteredProducts;
 
         return (
           <div className="space-y-4">
@@ -2479,10 +2492,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                     onChange={e => setSelectedProductId(e.target.value)}
                     className="w-full px-3 py-1.5 bg-blue-50/50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg text-xs font-bold text-slate-900 dark:text-white"
                   >
-                    {ledgerDropdownOptions.length === 0 ? (
-                      <option value="">{language === 'bn' ? 'কোনো পণ্য নেই' : 'No products found'}</option>
+                    {ledgerFilteredProducts.length === 0 ? (
+                      <option value="">{language === 'bn' ? 'এই ক্যাটাগরিতে কোনো পণ্য নেই' : 'No products found in this category'}</option>
                     ) : (
-                      ledgerDropdownOptions.map(p => (
+                      ledgerFilteredProducts.map(p => (
                         <option key={p.id} value={p.id}>
                           {p.name} {p.barcode ? `[${p.barcode}]` : ''} — Stock: {formatStockWithUnit(p.stock, p)}
                         </option>
@@ -2501,7 +2514,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                     className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
                   >
                     <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
-                    {categories.map(c => (
+                    {unifiedCategories.map(c => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                   </select>
@@ -2719,11 +2732,13 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                   className="w-full px-2.5 py-1.5 bg-blue-50/50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="ALL">🌟 {language === 'bn' ? 'সকল আইটেম (All Items)' : 'All Items (Overview)'}</option>
-                  {products.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} {p.barcode ? `[${p.barcode}]` : ''} — Stock: {p.stock} {p.unit}
-                    </option>
-                  ))}
+                  {products
+                    .filter(p => matchesCategoryFilter(p, salesCategoryId, categories))
+                    .map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} {p.barcode ? `[${p.barcode}]` : ''} — Stock: {p.stock} {p.unit}
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -2734,11 +2749,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                 </label>
                 <select
                   value={salesCategoryId}
-                  onChange={e => setSalesCategoryId(e.target.value)}
+                  onChange={e => {
+                    setSalesCategoryId(e.target.value);
+                    setSalesItemId('ALL');
+                  }}
                   className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
                 >
-                  <option value="ALL">All Categories</option>
-                  {categories.map(c => (
+                  <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
+                  {unifiedCategories.map(c => (
                     <option key={c.id} value={c.id}>
                       {c.name}
                     </option>
@@ -3013,7 +3031,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                             <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{s.product.generic || '—'}</td>
                           )}
                           <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{s.product.manufacturer || '—'}</td>
-                          <td className="py-2.5 px-4 text-slate-500">{s.product.categoryName}</td>
+                          <td className="py-2.5 px-4 text-slate-500">{resolveProductCategoryName(s.product, categories)}</td>
                           <td className="py-2.5 px-4 text-right font-mono text-slate-600 dark:text-slate-400">
                             {formatStockWithUnit(s.product.stock, s.product)}
                           </td>
@@ -3127,11 +3145,13 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                   className="w-full px-2.5 py-1.5 bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded-lg text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500"
                 >
                   <option value="ALL">🌟 {language === 'bn' ? 'সকল আইটেম (All Items)' : 'All Items (Overview)'}</option>
-                  {products.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} {p.barcode ? `[${p.barcode}]` : ''} — Current Stock: {p.stock} {p.unit}
-                    </option>
-                  ))}
+                  {products
+                    .filter(p => matchesCategoryFilter(p, purchaseCategoryId, categories))
+                    .map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} {p.barcode ? `[${p.barcode}]` : ''} — Current Stock: {p.stock} {p.unit}
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -3142,11 +3162,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                 </label>
                 <select
                   value={purchaseCategoryId}
-                  onChange={e => setPurchaseCategoryId(e.target.value)}
+                  onChange={e => {
+                    setPurchaseCategoryId(e.target.value);
+                    setPurchaseItemId('ALL');
+                  }}
                   className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
                 >
-                  <option value="ALL">All Categories</option>
-                  {categories.map(c => (
+                  <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
+                  {unifiedCategories.map(c => (
                     <option key={c.id} value={c.id}>
                       {c.name}
                     </option>
@@ -3421,7 +3444,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                             <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{p.product.generic || '—'}</td>
                           )}
                           <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{p.product.manufacturer || '—'}</td>
-                          <td className="py-2.5 px-4 text-slate-500">{p.product.categoryName}</td>
+                          <td className="py-2.5 px-4 text-slate-500">{resolveProductCategoryName(p.product, categories)}</td>
                           <td className="py-2.5 px-4 text-right font-mono text-slate-600 dark:text-slate-400">
                             {formatStockWithUnit(p.product.stock, p.product)}
                           </td>
@@ -3535,11 +3558,13 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                   className="w-full px-2.5 py-1.5 bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-lg text-xs font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500"
                 >
                   <option value="ALL">🌟 {language === 'bn' ? 'সকল আইটেম (All Items)' : 'All Items (Overview)'}</option>
-                  {products.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} {p.barcode ? `[${p.barcode}]` : ''} — Cost: ৳{p.purchasePrice} | Sale: ৳{p.salesPrice}
-                    </option>
-                  ))}
+                  {products
+                    .filter(p => matchesCategoryFilter(p, pnlCategoryId, categories))
+                    .map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} {p.barcode ? `[${p.barcode}]` : ''} — Cost: ৳{p.purchasePrice} | Sale: ৳{p.salesPrice}
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -3550,11 +3575,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                 </label>
                 <select
                   value={pnlCategoryId}
-                  onChange={e => setPnlCategoryId(e.target.value)}
+                  onChange={e => {
+                    setPnlCategoryId(e.target.value);
+                    setPnlItemId('ALL');
+                  }}
                   className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
                 >
-                  <option value="ALL">All Categories</option>
-                  {categories.map(c => (
+                  <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
+                  {unifiedCategories.map(c => (
                     <option key={c.id} value={c.id}>
                       {c.name}
                     </option>
@@ -3871,7 +3899,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                             <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{s.product.generic || '—'}</td>
                           )}
                           <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{s.product.manufacturer || '—'}</td>
-                          <td className="py-2.5 px-4 text-slate-500">{s.product.categoryName}</td>
+                          <td className="py-2.5 px-4 text-slate-500">{resolveProductCategoryName(s.product, categories)}</td>
                           <td className="py-2.5 px-4 text-right font-mono font-bold text-blue-600">
                             {formatCleanNumber(s.soldQty)} {s.product.unit}
                           </td>
@@ -3933,7 +3961,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
               <span className="text-[11px] font-bold text-slate-400 uppercase">Total Categories</span>
               <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white mt-1">
-                {categories.length}
+                {unifiedCategories.length}
               </div>
             </div>
             <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
@@ -4019,7 +4047,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
               <span className="text-[11px] font-bold text-slate-400 uppercase">Total Categories</span>
               <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white mt-1">
-                {categories.length}
+                {unifiedCategories.length}
               </div>
             </div>
             <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">

@@ -24,6 +24,11 @@ import {
 import { Product, SaleInvoice, Category, ViewTab } from '../../types';
 import { calculateDemandForecast, ProductDemandForecast } from '../../utils/demandForecast';
 import { generateAiSupplyChainInsight, generateProductDemandInsight } from '../../utils/geminiAi';
+import {
+  getUnifiedCategoryOptions,
+  matchesCategoryFilter,
+  resolveProductCategoryName,
+} from '../../utils/categoryFilter';
 
 interface DemandForecastWidgetProps {
   products: Product[];
@@ -63,6 +68,11 @@ export const DemandForecastWidget: React.FC<DemandForecastWidgetProps> = ({
   const [singleProductAiText, setSingleProductAiText] = useState<string>('');
   const [isGeneratingSingleAi, setIsGeneratingSingleAi] = useState(false);
 
+  const unifiedCategories = useMemo(
+    () => getUnifiedCategoryOptions(categories, products),
+    [categories, products]
+  );
+
   // Calculate 90-day forecast metrics
   const forecastSummary = useMemo(() => {
     return calculateDemandForecast(products, saleInvoices, categories);
@@ -79,7 +89,7 @@ export const DemandForecastWidget: React.FC<DemandForecastWidgetProps> = ({
       if (riskFilter === 'SLOW_MOVING' && (item.salesTrend !== 'NO_SALES' || item.currentStock === 0)) return false;
 
       // Category filter
-      if (selectedCategory !== 'ALL' && item.product.categoryId !== selectedCategory) {
+      if (!matchesCategoryFilter(item.product, selectedCategory, categories)) {
         return false;
       }
 
@@ -95,7 +105,7 @@ export const DemandForecastWidget: React.FC<DemandForecastWidgetProps> = ({
 
       return true;
     });
-  }, [forecastSummary, riskFilter, selectedCategory, searchQuery]);
+  }, [forecastSummary, riskFilter, selectedCategory, categories, searchQuery]);
 
   // Handle overall AI Strategy Report Generation
   const handleGenerateAiReport = async () => {
@@ -319,7 +329,7 @@ export const DemandForecastWidget: React.FC<DemandForecastWidgetProps> = ({
               className="px-2.5 py-1 text-sm font-semibold bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
             >
               <option value="ALL">{language === 'bn' ? 'সকল ক্যাটেগরি' : 'All Categories'}</option>
-              {categories.map((c) => (
+              {unifiedCategories.map((c) => (
                 <option key={c.id} value={c.id}>
                   {language === 'bn' ? c.nameBn || c.name : c.name}
                 </option>
@@ -370,11 +380,9 @@ export const DemandForecastWidget: React.FC<DemandForecastWidgetProps> = ({
                       <h3 className="font-bold text-sm text-zinc-900 dark:text-zinc-100 truncate max-w-[180px]">
                         {language === 'bn' ? item.product.nameBn || item.product.name : item.product.name}
                       </h3>
-                      {item.product.categoryName && (
-                        <span className="text-[9px] font-semibold bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 px-1 py-0.2 rounded">
-                          {item.product.categoryName}
-                        </span>
-                      )}
+                      <span className="text-[9px] font-semibold bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 px-1 py-0.2 rounded">
+                        {resolveProductCategoryName(item.product, categories)}
+                      </span>
                     </div>
 
                     {/* AI Recommendation Banner line */}

@@ -3,6 +3,7 @@ import { useApp } from '../../context/AppContext';
 import { useTranslation } from '../../i18n/translations';
 import { Category, DEFAULT_PRODUCT_UNITS } from '../../types';
 import { canUserDelete, canUserEdit } from '../../utils/permissions';
+import { matchesCategoryFilter } from '../../utils/categoryFilter';
 import { FolderTree, Plus, Edit2, Trash2, Save, X, Pill, Building2, Ruler, RotateCcw } from 'lucide-react';
 
 export const CategoriesView: React.FC = () => {
@@ -78,7 +79,7 @@ export const CategoriesView: React.FC = () => {
   const hasEditPermission = canUserEdit(currentUser, 'product');
 
   const handleDelete = (cat: Category) => {
-    const productCount = products.filter(p => p.categoryId === cat.id).length;
+    const productCount = products.filter(p => matchesCategoryFilter(p, cat.id, categories)).length;
     if (productCount > 0) {
       showToast(
         language === 'bn'
@@ -275,7 +276,7 @@ export const CategoriesView: React.FC = () => {
           {/* Categories Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             {categories.map(cat => {
-              const count = products.filter(p => p.categoryId === cat.id).length;
+              const count = products.filter(p => matchesCategoryFilter(p, cat.id, categories)).length;
               return (
                 <div
                   key={cat.id}

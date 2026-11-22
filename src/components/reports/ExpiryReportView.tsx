@@ -3,6 +3,7 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { useTranslation } from '../../i18n/translations';
 import { getProductExpirySummary, normalizeDateToISO } from '../../utils/dateUtils';
+import { getUnifiedCategoryOptions, matchesCategoryFilter, resolveProductCategoryName } from '../../utils/categoryFilter';
 import { 
   AlertTriangle, 
   Package, 
@@ -29,6 +30,11 @@ export const ExpiryReportView: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'EXPIRED' | 'EXPIRING_SOON'>('ALL');
   const [withinDays, setWithinDays] = useState(30);
 
+  const unifiedCategories = useMemo(
+    () => getUnifiedCategoryOptions(categories, products),
+    [categories, products]
+  );
+
   const expiryReportItems = useMemo(() => {
     return products
       .map(p => ({ 
@@ -38,9 +44,6 @@ export const ExpiryReportView: React.FC = () => {
       .filter(item => {
         // Must have some expiry info
         if (!item.summary.hasAnyExpiry) return false;
-        
-        // Stock filter (usually only care about items in stock, but maybe user wants all)
-        // Let's show all but highlight if stock > 0
         
         // Search filter
         if (searchTerm) {
@@ -54,7 +57,7 @@ export const ExpiryReportView: React.FC = () => {
         }
 
         // Category filter
-        if (selectedCategory !== 'ALL' && item.p.categoryId !== selectedCategory) return false;
+        if (!matchesCategoryFilter(item.p, selectedCategory, categories)) return false;
 
         // Status filter
         if (statusFilter === 'EXPIRED' && !item.summary.hasExpired) return false;
@@ -67,7 +70,7 @@ export const ExpiryReportView: React.FC = () => {
         const daysB = b.summary.minDaysRemaining ?? 9999;
         return daysA - daysB;
       });
-  }, [products, searchTerm, selectedCategory, statusFilter, withinDays]);
+  }, [products, categories, searchTerm, selectedCategory, statusFilter, withinDays]);
 
   const stats = useMemo(() => {
     return expiryReportItems.reduce((acc, item) => {
@@ -79,11 +82,12 @@ export const ExpiryReportView: React.FC = () => {
   }, [expiryReportItems]);
 
   const handleExportCSV = () => {
+    const esc = (v: string | number) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const headers = ['Product', 'SKU', 'Category', 'Status', 'Expiry Date', 'Days Left', 'Current Stock', 'Stock Value'];
     const rows = expiryReportItems.map(({ p, summary }) => [
       p.name,
       p.sku || '',
-      p.categoryName || '',
+      resolveProductCategoryName(p, categories),
       summary.displayStatus,
       summary.earliestExpDate || '',
       summary.minDaysRemaining ?? '',
@@ -91,14 +95,16 @@ export const ExpiryReportView: React.FC = () => {
       (p.stock * p.purchasePrice).toFixed(2)
     ]);
 
-    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `Expiry_Report_${new Date().toISOString().split('T')[0]}.csv`);
+    const csvText = '\uFEFF' + [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
+    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Expiry_Report_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   return (
@@ -177,7 +183,7 @@ export const ExpiryReportView: React.FC = () => {
           className="px-4 py-2 bg-slate-50 dark:bg-slate-800 border-none rounded-xl text-sm font-bold text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-rose-500"
         >
           <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
-          {categories.map(cat => (
+          {unifiedCategories.map(cat => (
             <option key={cat.id} value={cat.id}>{cat.name}</option>
           ))}
         </select>
@@ -239,7 +245,7 @@ export const ExpiryReportView: React.FC = () => {
                     <td className="py-4 px-6">
                       <div className="flex flex-col">
                         <span className="font-bold text-slate-900 dark:text-white text-sm">{p.name}</span>
-                        <span className="text-[10px] text-slate-400 font-mono">SKU: {p.sku || 'N/A'} | {p.categoryName}</span>
+                        <span className="text-[10px] text-slate-400 font-mono">SKU: {p.sku || 'N/A'} | {resolveProductCategoryName(p, categories)}</span>
                       </div>
                     </td>
                     <td className="py-4 px-4">

@@ -9,6 +9,11 @@ import {
   canUserPrintReportStatement,
 } from '../../utils/permissions';
 import {
+  getUnifiedCategoryOptions,
+  matchesCategoryFilter,
+  resolveProductCategoryName,
+} from '../../utils/categoryFilter';
+import {
   Boxes,
   Search,
   Filter,
@@ -98,6 +103,11 @@ export const BatchInventoryView: React.FC = () => {
 
   const isPharmacyMode = companySettings?.businessModule === 'pharmacy';
 
+  const unifiedCategories = useMemo(
+    () => getUnifiedCategoryOptions(categories, products),
+    [categories, products]
+  );
+
   // Search and Filter State
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'EXPIRED' | 'CRITICAL' | 'WARNING' | 'EXPIRING_30_DAYS' | 'GOOD' | 'NO_EXPIRY'>('ALL');
@@ -142,8 +152,7 @@ export const BatchInventoryView: React.FC = () => {
     const items: FlattenedBatchItem[] = [];
 
     products.forEach((p) => {
-      const categoryObj = categories.find((c) => c.id === p.categoryId);
-      const categoryName = categoryObj ? categoryObj.name : undefined;
+      const categoryName = resolveProductCategoryName(p, categories);
 
       // Identify FEFO priority batch for this product (earliest valid expiring batch with stock > 0)
       let earliestExpDate = '9999-12-31';
@@ -316,10 +325,7 @@ export const BatchInventoryView: React.FC = () => {
 
     // Category
     if (selectedCategory !== 'ALL') {
-      const catObj = categories.find((c) => c.id === selectedCategory);
-      if (catObj) {
-        result = result.filter((i) => i.categoryName === catObj.name);
-      }
+      result = result.filter((i) => matchesCategoryFilter(i.productRef, selectedCategory, categories));
     }
 
     // Generic
@@ -335,10 +341,7 @@ export const BatchInventoryView: React.FC = () => {
     // Let's simplify: Just use allBatchItems and filter by category/generic
     const itemsForMetrics = allBatchItems.filter((i) => {
         // Category
-        if (selectedCategory !== 'ALL') {
-          const catObj = categories.find((c) => c.id === selectedCategory);
-          if (catObj && i.categoryName !== catObj.name) return false;
-        }
+        if (!matchesCategoryFilter(i.productRef, selectedCategory, categories)) return false;
         // Generic
         if (isPharmacyMode && selectedGeneric !== 'ALL') {
           if (i.generic?.trim().toLowerCase() !== selectedGeneric.trim().toLowerCase()) return false;
@@ -1161,7 +1164,7 @@ export const BatchInventoryView: React.FC = () => {
               className="w-full py-2 px-3 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs font-medium focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer"
             >
               <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
-              {categories.map((c) => (
+              {unifiedCategories.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>

@@ -300,14 +300,14 @@ export const ProductImportModal: React.FC<ProductImportModalProps> = ({ onClose 
 
       const description = getByHeader(h => h.includes('desc') || h.includes('detail') || h.includes('বিবরণ'), 17);
 
-      const matchedCat = categories.find(c => c.name.toLowerCase() === categoryName.toLowerCase());
+      const matchedCat = categories.find(c => c.name.trim().toLowerCase() === categoryName.trim().toLowerCase());
 
       rows.push({
         name,
         nameBn: nameBn || undefined,
         sku,
         barcode,
-        categoryId: matchedCat ? matchedCat.id : categories[0]?.id || 'cat-default',
+        categoryId: matchedCat ? matchedCat.id : '',
         categoryName: matchedCat ? matchedCat.name : categoryName,
         generic: isPharmacyMode ? generic : '',
         manufacturer,

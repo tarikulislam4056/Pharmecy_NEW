@@ -13,6 +13,12 @@ import { canUserDelete, canUserEdit, canUserExportProductCsv } from '../../utils
 import { getProductExpirySummary } from '../../utils/dateUtils';
 import { formatStockWithUnit, hasDualUnit, formatCartonBreakdown, formatCleanNumber } from '../../utils/unitConversion';
 import {
+  getUnifiedCategoryOptions,
+  matchesCategoryFilter,
+  resolveProductCategoryName,
+  getCategoryLabelByValue,
+} from '../../utils/categoryFilter';
+import {
   Package,
   Search,
   Plus,
@@ -71,6 +77,11 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
   const { t } = useTranslation(language);
 
   const isPharmacyMode = companySettings?.businessModule === 'pharmacy';
+
+  const unifiedCategories = useMemo(
+    () => getUnifiedCategoryOptions(categories, products),
+    [categories, products]
+  );
 
   // Active View Tab
   const [activeTab, setActiveTab] = useState<'all' | 'batch-inventory' | 'expiry' | 'low-stock' | 'return-logs' | 'write-off-logs' | 'replace-logs'>('all');
@@ -169,7 +180,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
   const filteredExpiredProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
     return expiredProducts.filter(p => {
-      if (selectedCategory !== 'ALL' && p.categoryId !== selectedCategory) return false;
+      if (!matchesCategoryFilter(p, selectedCategory, categories)) return false;
       if (!q) return true;
       return (
         p.name.toLowerCase().includes(q) ||
@@ -180,12 +191,12 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
         (p.batchNumber && p.batchNumber.toLowerCase().includes(q))
       );
     });
-  }, [expiredProducts, search, selectedCategory, isPharmacyMode]);
+  }, [expiredProducts, categories, search, selectedCategory, isPharmacyMode]);
 
   const filteredExpiringSoonProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
     return expiringSoonProducts.filter(p => {
-      if (selectedCategory !== 'ALL' && p.categoryId !== selectedCategory) return false;
+      if (!matchesCategoryFilter(p, selectedCategory, categories)) return false;
       if (!q) return true;
       return (
         p.name.toLowerCase().includes(q) ||
@@ -196,12 +207,12 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
         (p.batchNumber && p.batchNumber.toLowerCase().includes(q))
       );
     });
-  }, [expiringSoonProducts, search, selectedCategory, isPharmacyMode]);
+  }, [expiringSoonProducts, categories, search, selectedCategory, isPharmacyMode]);
 
   const filteredFreshDatedProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
     return freshDatedProducts.filter(p => {
-      if (selectedCategory !== 'ALL' && p.categoryId !== selectedCategory) return false;
+      if (!matchesCategoryFilter(p, selectedCategory, categories)) return false;
       if (!q) return true;
       return (
         p.name.toLowerCase().includes(q) ||
@@ -212,7 +223,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
         (p.batchNumber && p.batchNumber.toLowerCase().includes(q))
       );
     });
-  }, [freshDatedProducts, search, selectedCategory, isPharmacyMode]);
+  }, [freshDatedProducts, categories, search, selectedCategory, isPharmacyMode]);
   const lowStockCount = useMemo(() => products.filter(p => p.stock <= p.reorderLevel).length, [products]);
   const supplierReturnsCount = useMemo(() => (expiredReturnLogs || []).filter(l => l.actionType === 'RETURN_SUPPLIER').length, [expiredReturnLogs]);
   const writeOffsCount = useMemo(() => (expiredReturnLogs || []).filter(l => l.actionType === 'WRITE_OFF').length, [expiredReturnLogs]);
@@ -261,7 +272,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
         (p.batchNumber && p.batchNumber.toLowerCase().includes(query)) ||
         (p.batches && p.batches.some(b => b.batchNumber && b.batchNumber.toLowerCase().includes(query)));
 
-      const matchCat = selectedCategory === 'ALL' || p.categoryId === selectedCategory;
+      const matchCat = matchesCategoryFilter(p, selectedCategory, categories);
       const matchGen = !isPharmacyMode || selectedGeneric === 'ALL' || (Boolean(p.generic) && p.generic!.trim().toLowerCase() === selectedGeneric.trim().toLowerCase());
       const matchMan = selectedManufacturer === 'ALL' || (Boolean(p.manufacturer) && p.manufacturer!.trim().toLowerCase() === selectedManufacturer.trim().toLowerCase());
 
@@ -318,6 +329,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
     });
   }, [
     products,
+    categories,
     search,
     selectedCategory,
     selectedGeneric,
@@ -425,7 +437,9 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
 
   // Print Stock List / Valuation Report
   const handlePrintProductList = () => {
-    const selectedCatObj = categories.find(c => c.id === selectedCategory);
+    const selectedCategoryLabel = selectedCategory === 'ALL'
+      ? undefined
+      : getCategoryLabelByValue(selectedCategory, categories, products);
     let heading = language === 'bn' ? 'পণ্য স্টক ও ইনভেন্টরি মূল্যায়ন রিপোর্ট' : 'PRODUCT STOCK & VALUATION REPORT';
     let filterTag = language === 'bn' ? 'সকল সক্রিয় পণ্য' : 'All Active Inventory';
 
@@ -450,7 +464,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
     if (periodLabel) filterTagsArr.push(`${language === 'bn' ? 'সময়কাল' : 'Period'}: ${periodLabel}`);
     else if (startDate && endDate) filterTagsArr.push(`${startDate} to ${endDate}`);
     if (search) filterTagsArr.push(`Search: "${search}"`);
-    if (selectedCategory !== 'ALL' && selectedCatObj) filterTagsArr.push(`Category: ${selectedCatObj.name}`);
+    if (selectedCategoryLabel) filterTagsArr.push(`Category: ${selectedCategoryLabel}`);
     if (isPharmacyMode && selectedGeneric !== 'ALL') filterTagsArr.push(`Generic: ${selectedGeneric}`);
     if (selectedManufacturer !== 'ALL') filterTagsArr.push(`Brand: ${selectedManufacturer}`);
 
@@ -461,7 +475,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
         reportHeading: heading,
         period: periodLabel || (startDate && endDate ? `${startDate} to ${endDate}` : (language === 'bn' ? 'সকল সময়' : 'All Time')),
         generatedDate: new Date().toLocaleDateString('en-GB'),
-        categoryFilter: selectedCategory === 'ALL' ? undefined : (selectedCatObj?.name || selectedCategory),
+        categoryFilter: selectedCategoryLabel,
         filterTag: filterTagsArr.length > 0 ? `${filterTag} (${filterTagsArr.join(', ')})` : filterTag,
         totalProducts: filteredProducts.length,
         totalUnits: totalStockCount,
@@ -524,7 +538,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
         escCsv(p.nameBn || ''),
         escCsv(p.sku || ''),
         escCsv(p.barcode || ''),
-        escCsv(p.categoryName || ''),
+        escCsv(resolveProductCategoryName(p, categories)),
         ...(isPharmacyMode ? [escCsv(p.generic || '')] : []),
         escCsv(p.manufacturer || ''),
         ...(isPharmacyMode ? [escCsv(p.strength || ''), escCsv(p.dosageForm || ''), escCsv(p.dosageSchedule || '')] : []),
@@ -1110,7 +1124,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
               className="w-full py-1.5 px-2.5 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-xs font-medium text-zinc-800 dark:text-zinc-200"
             >
               <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি (All)' : 'All Categories'}</option>
-              {categories.map(c => (
+              {unifiedCategories.map(c => (
                 <option key={c.id} value={c.id}>
                   {c.name} {c.nameBn ? `(${c.nameBn})` : ''}
                 </option>
@@ -1196,7 +1210,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
 
             {selectedCategory !== 'ALL' && (
               <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300 font-medium text-[11px] border border-blue-200 dark:border-blue-800">
-                Category: {categories.find(c => c.id === selectedCategory)?.name}
+                Category: {getCategoryLabelByValue(selectedCategory, categories, products)}
               </span>
             )}
 

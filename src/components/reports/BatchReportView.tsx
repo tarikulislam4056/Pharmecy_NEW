@@ -4,6 +4,12 @@ import { Product, ProductBatch } from '../../types';
 import { BatchManagementModal } from '../products/BatchManagementModal';
 import { normalizeDateToISO, getDaysRemaining } from '../../utils/dateUtils';
 import {
+  getUnifiedCategoryOptions,
+  matchesCategoryFilter,
+  resolveProductCategoryName,
+  getCategoryLabelByValue,
+} from '../../utils/categoryFilter';
+import {
   canUserExportReportCsv,
   canUserDownloadReportPdf,
   canUserPrintReportStatement,
@@ -113,6 +119,11 @@ export const BatchReportView = forwardRef<BatchReportHandle, BatchReportViewProp
     setPurchaseDateEnd(globalEndDate);
   }, [globalStartDate, globalEndDate]);
 
+  const unifiedCategories = useMemo(
+    () => getUnifiedCategoryOptions(categories, products),
+    [categories, products]
+  );
+
   // Modals state
   const [selectedBatchForDrilldown, setSelectedBatchForDrilldown] = useState<BatchReportItem | null>(null);
   const [productForBatchManageId, setProductForBatchManageId] = useState<string | null>(null);
@@ -184,7 +195,7 @@ export const BatchReportView = forwardRef<BatchReportHandle, BatchReportViewProp
           productNameBn: prod.nameBn,
           sku: prod.sku,
           barcode: prod.barcode,
-          categoryName: prod.categoryName || 'General',
+          categoryName: resolveProductCategoryName(prod, categories),
           generic: prod.generic,
           manufacturer: prod.manufacturer,
           unit: prod.unit,
@@ -324,7 +335,7 @@ export const BatchReportView = forwardRef<BatchReportHandle, BatchReportViewProp
       }
 
       // 4. Category Filter
-      if (selectedCategoryId !== 'ALL' && b.productRef.categoryId !== selectedCategoryId) {
+      if (!matchesCategoryFilter(b.productRef, selectedCategoryId, categories)) {
         return false;
       }
 
@@ -370,6 +381,7 @@ export const BatchReportView = forwardRef<BatchReportHandle, BatchReportViewProp
     selectedBatchNumber,
     selectedProductId,
     selectedCategoryId,
+    categories,
     selectedSupplierId,
     suppliersList,
     expDateStart,
@@ -892,8 +904,13 @@ export const BatchReportView = forwardRef<BatchReportHandle, BatchReportViewProp
     const printTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
     const selectedProd = products.find(p => p.id === selectedProductId);
-    const selectedCat = categories.find(c => c.id === selectedCategoryId);
     const selectedSup = suppliersList.find(s => s.id === selectedSupplierId);
+    const selectedCatLabel = getCategoryLabelByValue(
+      selectedCategoryId,
+      categories,
+      products,
+      language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'
+    );
 
     openPrintModal({
       type: 'BATCH_EXPIRY_REPORT',
@@ -908,7 +925,7 @@ export const BatchReportView = forwardRef<BatchReportHandle, BatchReportViewProp
         filters: {
           batchNumber: selectedBatchNumber === 'ALL' ? (language === 'bn' ? 'সকল ব্যাচ' : 'All Batches') : selectedBatchNumber,
           productName: selectedProductId === 'ALL' ? (language === 'bn' ? 'সকল পণ্য' : 'All Products') : (selectedProd?.name || selectedProductId),
-          categoryName: selectedCategoryId === 'ALL' ? (language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories') : (selectedCat?.name || selectedCategoryId),
+          categoryName: selectedCatLabel,
           supplierName: selectedSupplierId === 'ALL' ? (language === 'bn' ? 'সকল সাপ্লায়ার' : 'All Suppliers') : (selectedSup?.name || selectedSupplierId),
           statusFilter: statusFilter === 'ALL' ? (language === 'bn' ? 'সকল অবস্থা (All Status)' : 'All Status') : statusFilter,
           expDateRange: expDateStart || expDateEnd ? `${expDateStart || 'Start'} - ${expDateEnd || 'End'}` : '',
@@ -1344,11 +1361,15 @@ export const BatchReportView = forwardRef<BatchReportHandle, BatchReportViewProp
             </label>
             <select
               value={selectedCategoryId}
-              onChange={e => setSelectedCategoryId(e.target.value)}
+              onChange={e => {
+                setSelectedCategoryId(e.target.value);
+                setSelectedBatchNumber('ALL');
+                setSelectedProductId('ALL');
+              }}
               className="w-full px-2.5 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white"
             >
               <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
-              {categories.map(c => (
+              {unifiedCategories.map(c => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>

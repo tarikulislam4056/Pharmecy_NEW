@@ -13,6 +13,10 @@ import {
   formatCleanNumber,
 } from '../../utils/unitConversion';
 import {
+  getUnifiedCategoryOptions,
+  matchesCategoryFilter,
+} from '../../utils/categoryFilter';
+import {
   Search,
   Barcode,
   Camera,
@@ -90,6 +94,11 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
   } = useApp();
   const { t } = useTranslation(language);
   const availableUnits = companySettings?.productUnits !== undefined ? companySettings.productUnits : DEFAULT_PRODUCT_UNITS;
+
+  const unifiedCategories = useMemo(
+    () => getUnifiedCategoryOptions(categories, products),
+    [categories, products]
+  );
 
   // Quick Add Unknown Barcode Product State
   const [quickBarcodeData, setQuickBarcodeData] = useState<{
@@ -235,7 +244,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
   // Filtered products for top quick selector
   const filteredTopProducts = useMemo(() => {
     return products.filter(p => {
-      const matchesCat = selectedTopCategory === 'ALL' || p.categoryId === selectedTopCategory;
+      const matchesCat = matchesCategoryFilter(p, selectedTopCategory, categories);
       if (!topProductSearchQuery.trim()) {
         return matchesCat;
       }
@@ -248,11 +257,11 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
           p.sku.toLowerCase().includes(q))
       );
     });
-  }, [products, topProductSearchQuery, selectedTopCategory]);
+  }, [products, categories, topProductSearchQuery, selectedTopCategory]);
 
   const filteredCatalogProducts = useMemo(() => {
     return products.filter(p => {
-      const matchesCat = catalogCategory === 'ALL' || p.categoryId === catalogCategory;
+      const matchesCat = matchesCategoryFilter(p, catalogCategory, categories);
       if (!catalogSearch.trim()) return matchesCat;
       const q = catalogSearch.toLowerCase();
       return (
@@ -263,7 +272,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
           p.sku.toLowerCase().includes(q))
       );
     });
-  }, [products, catalogSearch, catalogCategory]);
+  }, [products, categories, catalogSearch, catalogCategory]);
 
   // Calculation of Table Items Total
   const grossSubtotal = useMemo(() => {
@@ -1187,7 +1196,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
             >
               All ({products.length})
             </button>
-            {categories.map(cat => (
+            {unifiedCategories.map(cat => (
               <button
                 type="button"
                 key={cat.id}
@@ -1198,7 +1207,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                     : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
                 }`}
               >
-                {cat.name} ({products.filter(p => p.categoryId === cat.id).length})
+                {cat.name} ({products.filter(p => matchesCategoryFilter(p, cat.id, categories)).length})
               </button>
             ))}
           </div>
@@ -1864,7 +1873,7 @@ export const PurchaseEntryView: React.FC<PurchaseEntryViewProps> = ({
                 >
                   All ({products.length})
                 </button>
-                {categories.map(c => (
+                {unifiedCategories.map(c => (
                   <button
                     type="button"
                     key={c.id}

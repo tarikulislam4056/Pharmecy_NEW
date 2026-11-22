@@ -14,6 +14,10 @@ import {
   getBaseQuantity,
 } from '../../utils/unitConversion';
 import {
+  getUnifiedCategoryOptions,
+  matchesCategoryFilter,
+} from '../../utils/categoryFilter';
+import {
   Search,
   Barcode,
   Camera,
@@ -111,6 +115,11 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
   } | null>(null);
 
   const isPharmacyMode = companySettings?.businessModule === 'pharmacy';
+
+  const unifiedCategories = useMemo(
+    () => getUnifiedCategoryOptions(categories, products),
+    [categories, products]
+  );
 
   // View Mode: 'invoice' (Screenshot Design) or 'touch-pos' (Grid mode)
   const [viewMode, setViewMode] = useState<'invoice' | 'touch-pos'>('invoice');
@@ -411,7 +420,7 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
   // Filtered products for top quick selector
   const filteredTopProducts = useMemo(() => {
     return products.filter(p => {
-      const matchesCat = selectedTopCategory === 'ALL' || p.categoryId === selectedTopCategory;
+      const matchesCat = matchesCategoryFilter(p, selectedTopCategory, categories);
       if (!topProductSearchQuery.trim()) {
         return matchesCat;
       }
@@ -427,11 +436,11 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
         (p.categoryName && p.categoryName.toLowerCase().includes(q));
       return matchesCat && matchesQuery;
     });
-  }, [products, topProductSearchQuery, selectedTopCategory, isPharmacyMode]);
+  }, [products, categories, topProductSearchQuery, selectedTopCategory, isPharmacyMode]);
 
   const filteredCatalogProducts = useMemo(() => {
     return products.filter(p => {
-      const matchesCat = catalogCategory === 'ALL' || p.categoryId === catalogCategory;
+      const matchesCat = matchesCategoryFilter(p, catalogCategory, categories);
       if (!catalogSearch.trim()) return matchesCat;
       const q = catalogSearch.toLowerCase();
       return (
@@ -446,7 +455,7 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
           (p.categoryName && p.categoryName.toLowerCase().includes(q)))
       );
     });
-  }, [products, catalogSearch, catalogCategory, isPharmacyMode]);
+  }, [products, categories, catalogSearch, catalogCategory, isPharmacyMode]);
 
   // Calculation of Table Items Total
   const grossSubtotal = useMemo(() => {
@@ -1930,7 +1939,7 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
             >
               All ({products.length})
             </button>
-            {categories.map(cat => (
+            {unifiedCategories.map(cat => (
               <button
                 type="button"
                 key={cat.id}
@@ -1941,7 +1950,7 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
                     : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
                 }`}
               >
-                {cat.name} ({products.filter(p => p.categoryId === cat.id).length})
+                {cat.name} ({products.filter(p => matchesCategoryFilter(p, cat.id, categories)).length})
               </button>
             ))}
           </div>
@@ -3069,7 +3078,7 @@ export const PosSaleView: React.FC<PosSaleViewProps> = ({ onOpenNewCustomerModal
                 >
                   All ({products.length})
                 </button>
-                {categories.map(c => (
+                {unifiedCategories.map(c => (
                   <button
                     type="button"
                     key={c.id}

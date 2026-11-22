@@ -7,6 +7,12 @@ import { PurchaseInvoice, Product, DeletedPurchaseInvoice } from '../../types';
 import { canUserDelete, canUserEdit, canUserReturn } from '../../utils/permissions';
 import { getBaseQuantity, formatCleanNumber } from '../../utils/unitConversion';
 import {
+  getUnifiedCategoryOptions,
+  matchesCategoryFilter,
+  resolveProductCategoryName,
+  getCategoryLabelByValue,
+} from '../../utils/categoryFilter';
+import {
   Search,
   Printer,
   RotateCcw,
@@ -74,6 +80,11 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
   const { t } = useTranslation(language);
 
   const isPharmacyMode = companySettings?.businessModule === 'pharmacy';
+
+  const unifiedCategories = useMemo(
+    () => getUnifiedCategoryOptions(categories, products),
+    [categories, products]
+  );
 
   const hasDeletePermission = canUserDelete(currentUser, 'purchase');
   const hasEditPermission = canUserEdit(currentUser, 'purchase');
@@ -257,12 +268,11 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
       // 4. Category, Generic, Brand or Item Search match
       const matchingItems = pur.items.filter(item => {
         const prod = productMap.get(item.productId);
-        const itemCategory = prod?.categoryId || '';
         const itemGeneric = (prod?.generic || '').toLowerCase();
         const itemBrand = (prod?.manufacturer || '').toLowerCase();
         const itemName = (item.productName || prod?.name || '').toLowerCase();
 
-        if (categoryFilter !== 'ALL' && itemCategory !== categoryFilter) {
+        if (!matchesCategoryFilter(prod, categoryFilter, categories)) {
           return false;
         }
         if (genericFilter !== 'ALL' && itemGeneric !== genericFilter.toLowerCase()) {
@@ -325,6 +335,7 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
     brandFilter,
     search,
     productMap,
+    categories,
     users,
   ]);
 
@@ -338,14 +349,14 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
     return filteredPurchases.reduce((sum, pur) => {
       const itemSum = pur.items.reduce((s, it) => {
         const prod = productMap.get(it.productId);
-        if (categoryFilter !== 'ALL' && prod?.categoryId !== categoryFilter) return s;
+        if (!matchesCategoryFilter(prod, categoryFilter, categories)) return s;
         if (isPharmacyMode && genericFilter !== 'ALL' && (prod?.generic || '').toLowerCase() !== genericFilter.toLowerCase()) return s;
         if (brandFilter !== 'ALL' && (prod?.manufacturer || '').toLowerCase() !== brandFilter.toLowerCase()) return s;
         return s + getBaseQuantity(it, prod);
       }, 0);
       return sum + itemSum;
     }, 0);
-  }, [filteredPurchases, categoryFilter, genericFilter, brandFilter, productMap, isPharmacyMode]);
+  }, [filteredPurchases, categoryFilter, categories, genericFilter, brandFilter, productMap, isPharmacyMode]);
 
   // -------------------------------------------------------------
   // 1. CATEGORY WISE PURCHASE REPORT CALCULATION
@@ -377,13 +388,14 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
       }
     >();
 
-    // Initialise with categories
-    categories.forEach(cat => {
+    // Initialise with unified categories
+    unifiedCategories.forEach(cat => {
       if (categoryFilter === 'ALL' || cat.id === categoryFilter) {
+        const realCat = categories.find(c => c.id === cat.id);
         catDataMap.set(cat.id, {
           categoryId: cat.id,
           categoryName: cat.name,
-          categoryCode: cat.code,
+          categoryCode: realCat?.code,
           purchasedQty: 0,
           totalAmount: 0,
           productIds: new Set<string>(),
@@ -411,13 +423,21 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
     filteredPurchases.forEach(pur => {
       pur.items.forEach(it => {
         const prod = productMap.get(it.productId);
-        const catId = prod?.categoryId && catDataMap.has(prod.categoryId) ? prod.categoryId : uncategorizedKey;
+        if (!matchesCategoryFilter(prod, categoryFilter, categories)) return;
 
         // check secondary filters
         if (isPharmacyMode && genericFilter !== 'ALL' && (prod?.generic || '').toLowerCase() !== genericFilter.toLowerCase()) return;
         if (brandFilter !== 'ALL' && (prod?.manufacturer || '').toLowerCase() !== brandFilter.toLowerCase()) return;
 
-        const entry = catDataMap.get(catId);
+        let matchedCatId = uncategorizedKey;
+        if (prod) {
+          const matchedOpt = unifiedCategories.find(opt => matchesCategoryFilter(prod, opt.id, categories));
+          if (matchedOpt && catDataMap.has(matchedOpt.id)) {
+            matchedCatId = matchedOpt.id;
+          }
+        }
+
+        const entry = catDataMap.get(matchedCatId);
         if (entry) {
           const baseQty = getBaseQuantity(it, prod);
           entry.purchasedQty += baseQty;
@@ -453,7 +473,7 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
         percentage: overallCatTotal > 0 ? (c.totalAmount / overallCatTotal) * 100 : 0,
       }))
       .sort((a, b) => b.totalAmount - a.totalAmount);
-  }, [categories, filteredPurchases, productMap, categoryFilter, genericFilter, brandFilter, language]);
+  }, [unifiedCategories, categories, filteredPurchases, productMap, categoryFilter, genericFilter, brandFilter, language, isPharmacyMode]);
 
   // -------------------------------------------------------------
   // 2. GENERIC WISE PURCHASE REPORT CALCULATION
@@ -490,7 +510,7 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
         const genericName = prod?.generic && prod.generic.trim() ? prod.generic.trim() : (language === 'bn' ? 'সাধারণ / জেনেরিক নেই' : 'General / No Generic');
 
         if (genericFilter !== 'ALL' && genericName.toLowerCase() !== genericFilter.toLowerCase()) return;
-        if (categoryFilter !== 'ALL' && prod?.categoryId !== categoryFilter) return;
+        if (!matchesCategoryFilter(prod, categoryFilter, categories)) return;
         if (brandFilter !== 'ALL' && (prod?.manufacturer || '').toLowerCase() !== brandFilter.toLowerCase()) return;
 
         if (!genericMap.has(genericName)) {
@@ -514,7 +534,7 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
         g.billIds.add(pur.id);
         g.itemsList.push({
           productName: it.productName,
-          categoryName: prod?.categoryName || categories.find(c => c.id === prod?.categoryId)?.name,
+          categoryName: resolveProductCategoryName(prod, categories),
           brand: prod?.manufacturer,
           quantity: it.quantity,
           unit: it.unit || 'pcs',
@@ -578,7 +598,7 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
         const brandName = prod?.manufacturer && prod.manufacturer.trim() ? prod.manufacturer.trim() : (language === 'bn' ? 'ব্র্যান্ড বিহীন / নন-ব্র্যান্ডেড' : 'Unbranded / Others');
 
         if (brandFilter !== 'ALL' && brandName.toLowerCase() !== brandFilter.toLowerCase()) return;
-        if (categoryFilter !== 'ALL' && prod?.categoryId !== categoryFilter) return;
+        if (!matchesCategoryFilter(prod, categoryFilter, categories)) return;
         if (isPharmacyMode && genericFilter !== 'ALL' && (prod?.generic || '').toLowerCase() !== genericFilter.toLowerCase()) return;
 
         if (!brandMap.has(brandName)) {
@@ -602,7 +622,7 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
         b.billIds.add(pur.id);
         b.itemsList.push({
           productName: it.productName,
-          categoryName: prod?.categoryName || categories.find(c => c.id === prod?.categoryId)?.name,
+          categoryName: resolveProductCategoryName(prod, categories),
           generic: prod?.generic,
           quantity: it.quantity,
           unit: it.unit || 'pcs',
@@ -654,7 +674,7 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
     filteredPurchases.forEach(pur => {
       pur.items.forEach(it => {
         const prod = productMap.get(it.productId);
-        if (categoryFilter !== 'ALL' && prod?.categoryId !== categoryFilter) return;
+        if (!matchesCategoryFilter(prod, categoryFilter, categories)) return;
         if (isPharmacyMode && genericFilter !== 'ALL' && (prod?.generic || '').toLowerCase() !== genericFilter.toLowerCase()) return;
         if (brandFilter !== 'ALL' && (prod?.manufacturer || '').toLowerCase() !== brandFilter.toLowerCase()) return;
 
@@ -662,7 +682,7 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
           itemMap.set(it.productId, {
             productId: it.productId,
             productName: it.productName,
-            categoryName: prod?.categoryName || categories.find(c => c.id === prod?.categoryId)?.name || 'General',
+            categoryName: resolveProductCategoryName(prod, categories),
             generic: prod?.generic || '-',
             brand: prod?.manufacturer || '-',
             unit: prod?.unit || it.unit || 'Pcs',
@@ -1374,7 +1394,7 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
               className="w-full py-1.5 px-2.5 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg text-xs font-medium text-zinc-800 dark:text-zinc-200 focus:ring-1 focus:ring-sky-500"
             >
               <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি (All)' : 'All Categories'}</option>
-              {categories.map(c => (
+              {unifiedCategories.map(c => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
@@ -1517,7 +1537,7 @@ export const PurchaseListView: React.FC<PurchaseListViewProps> = ({
 
             {categoryFilter !== 'ALL' && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 rounded text-[11px] font-medium border border-indigo-200 dark:border-indigo-800">
-                Cat: {categories.find(c => c.id === categoryFilter)?.name || categoryFilter}
+                Cat: {getCategoryLabelByValue(categoryFilter, categories, products)}
               </span>
             )}
 

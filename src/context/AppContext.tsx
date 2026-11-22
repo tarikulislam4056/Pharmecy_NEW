@@ -3320,13 +3320,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       initialStock: b.initialStock !== undefined ? clampNonNegative(b.initialStock, 4) : b.initialStock,
     }));
 
-    const category = categories.find(c => c.id === prodData.categoryId);
+    const categoryById = categories.find(c => c.id === prodData.categoryId);
+    const categoryByName = !categoryById && prodData.categoryName
+      ? categories.find(c => c.name.trim().toLowerCase() === prodData.categoryName!.trim().toLowerCase())
+      : undefined;
+    const resolvedCat = categoryById || categoryByName;
     const newProduct: Product = {
       ...prodData,
+      categoryId: resolvedCat?.id || prodData.categoryId,
       stock: safeStock,
       batches: safeBatches,
       id: `prod-${Date.now()}`,
-      categoryName: category?.name || 'General',
+      categoryName: resolvedCat?.name || prodData.categoryName || 'General',
       createdBy: currentUser?.id || 'usr-1',
       createdAt: new Date().toISOString().split('T')[0],
     };
@@ -3676,7 +3681,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateCategory = (id: string, updates: Partial<Category>) => {
+    const existingCat = categories.find(c => c.id === id);
     setCategories(prev => prev.map(c => (c.id === id ? { ...c, ...updates } : c)));
+    if (updates.name && updates.name.trim()) {
+      const nextName = updates.name.trim();
+      const oldNameLower = existingCat?.name?.trim().toLowerCase();
+      setProducts(prev =>
+        prev.map(p => {
+          if (p.categoryId === id || (oldNameLower && p.categoryName?.trim().toLowerCase() === oldNameLower)) {
+            return { ...p, categoryId: id, categoryName: nextName };
+          }
+          return p;
+        })
+      );
+    }
     showToast(language === 'bn' ? 'ক্যাটাগরি আপডেট হয়েছে।' : 'Category updated.');
   };
 
@@ -3713,6 +3731,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const created: Product[] = [];
     let skipped = 0;
 
+    const catMapByName = new Map<string, Category>();
+    categories.forEach(c => {
+      if (c.name && c.name.trim()) {
+        catMapByName.set(c.name.trim().toLowerCase(), c);
+      }
+    });
+    const newCategoriesToAdd: Category[] = [];
+    const baseTime = Date.now();
+
     newProducts.forEach((p, idx) => {
       const barcodeKey = p.barcode?.trim().toLowerCase();
       const skuKey = p.sku?.trim().toLowerCase();
@@ -3724,20 +3751,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (barcodeKey) existingBarcodes.add(barcodeKey);
       if (skuKey) existingSkus.add(skuKey);
 
+      const cleanCatName = (p.categoryName || '').trim();
+      let resolvedCatId = p.categoryId;
+      let resolvedCatName = cleanCatName || 'General';
+
+      if (cleanCatName) {
+        const key = cleanCatName.toLowerCase();
+        let existingCat = catMapByName.get(key);
+        if (!existingCat) {
+          existingCat = {
+            id: `cat-${baseTime}-${newCategoriesToAdd.length}`,
+            name: cleanCatName,
+            nameBn: cleanCatName,
+            code: cleanCatName.toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 20) || 'CAT',
+            createdBy: currentUser?.id || 'usr-1',
+          };
+          catMapByName.set(key, existingCat);
+          newCategoriesToAdd.push(existingCat);
+        }
+        resolvedCatId = existingCat.id;
+        resolvedCatName = existingCat.name;
+      } else if (p.categoryId) {
+        const byId = categories.find(c => c.id === p.categoryId);
+        if (byId) {
+          resolvedCatId = byId.id;
+          resolvedCatName = byId.name;
+        }
+      }
+
       created.push({
         ...p,
+        categoryId: resolvedCatId || 'cat-default',
+        categoryName: resolvedCatName,
         stock: clampNonNegative(p.stock, 4),
         batches: p.batches?.map(b => ({
           ...b,
           stock: clampNonNegative(b.stock, 4),
           initialStock: b.initialStock !== undefined ? clampNonNegative(b.initialStock, 4) : b.initialStock,
         })),
-        id: `prod-${Date.now()}-${idx}`,
+        id: `prod-${baseTime}-${idx}`,
         createdBy: currentUser?.id || 'usr-1',
         createdAt: timestamp,
       });
     });
 
+    if (newCategoriesToAdd.length > 0) {
+      setCategories(prev => [...prev, ...newCategoriesToAdd]);
+    }
     setProducts(prev => [...created, ...prev]);
     showToast(
       language === 'bn'
