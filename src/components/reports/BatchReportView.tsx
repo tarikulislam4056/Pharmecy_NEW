@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Product, ProductBatch, SaleInvoice, PurchaseInvoice } from '../../types';
+import { Product, ProductBatch } from '../../types';
 import { BatchManagementModal } from '../products/BatchManagementModal';
 import { normalizeDateToISO, getDaysRemaining } from '../../utils/dateUtils';
 import {
@@ -59,12 +59,22 @@ export interface BatchReportItem {
   productRef: Product;
 }
 
+export interface BatchReportHandle {
+  exportCsv: () => void;
+  printReport: (autoDownloadPdf?: boolean) => void;
+}
+
 interface BatchReportViewProps {
+  globalStartDate?: string;
+  globalEndDate?: string;
   onExportCsv?: (headers: string[], rows: (string | number)[][], fileName: string) => void;
   onPrint?: () => void;
 }
 
-export const BatchReportView: React.FC<BatchReportViewProps> = () => {
+export const BatchReportView = forwardRef<BatchReportHandle, BatchReportViewProps>(({
+  globalStartDate = '',
+  globalEndDate = '',
+}, ref) => {
   const {
     language,
     formatCurrency,
@@ -74,6 +84,7 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
     saleInvoices,
     purchaseInvoices,
     saleReturns,
+    purchaseReturns,
     expiredReturnLogs,
     openPrintModal,
     companySettings,
@@ -94,12 +105,21 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
   >('ALL');
   const [expDateStart, setExpDateStart] = useState<string>('');
   const [expDateEnd, setExpDateEnd] = useState<string>('');
-  const [purchaseDateStart, setPurchaseDateStart] = useState<string>('');
-  const [purchaseDateEnd, setPurchaseDateEnd] = useState<string>('');
+  const [purchaseDateStart, setPurchaseDateStart] = useState<string>(globalStartDate);
+  const [purchaseDateEnd, setPurchaseDateEnd] = useState<string>(globalEndDate);
+
+  useEffect(() => {
+    setPurchaseDateStart(globalStartDate);
+    setPurchaseDateEnd(globalEndDate);
+  }, [globalStartDate, globalEndDate]);
 
   // Modals state
   const [selectedBatchForDrilldown, setSelectedBatchForDrilldown] = useState<BatchReportItem | null>(null);
-  const [productForBatchManage, setProductForBatchManage] = useState<Product | null>(null);
+  const [productForBatchManageId, setProductForBatchManageId] = useState<string | null>(null);
+  const productForBatchManage = useMemo(
+    () => (productForBatchManageId ? products.find(p => p.id === productForBatchManageId) || null : null),
+    [productForBatchManageId, products]
+  );
   const [selectedBatchLedgerView, setSelectedBatchLedgerView] = useState<'DAILY' | 'DETAILED'>('DAILY');
   const [batchLedgerDateFilter, setBatchLedgerDateFilter] = useState<string>('');
 
@@ -308,9 +328,16 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
         return false;
       }
 
-      // 5. Supplier Filter
-      if (selectedSupplierId !== 'ALL' && b.supplierId !== selectedSupplierId && b.supplierName !== selectedSupplierId) {
-        return false;
+      // 5. Supplier Filter (match by ID, supplierName, or manufacturer)
+      if (selectedSupplierId !== 'ALL') {
+        const selectedSupObj = suppliersList.find(s => s.id === selectedSupplierId);
+        const supNameLower = (selectedSupObj?.name || selectedSupplierId).trim().toLowerCase();
+        const matchId = b.supplierId === selectedSupplierId;
+        const matchSupName = Boolean(b.supplierName && b.supplierName.trim().toLowerCase() === supNameLower);
+        const matchMfg = Boolean(b.manufacturer && b.manufacturer.trim().toLowerCase() === supNameLower);
+        if (!matchId && !matchSupName && !matchMfg) {
+          return false;
+        }
       }
 
       // 6. Expiry Date Range Filter
@@ -329,7 +356,7 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
         if (statusFilter === 'IN_STOCK' && b.stock <= 0) return false;
         if (statusFilter === 'DEPLETED' && b.stock > 0) return false;
         if (statusFilter === 'EXPIRED' && (details.status !== 'EXPIRED' || b.stock <= 0)) return false;
-        if ((statusFilter === 'EXPIRING_30' || statusFilter === 'EXPIRING_30_DAYS') && (details.status !== 'EXPIRING_30' || b.stock <= 0)) return false;
+        if (statusFilter === 'EXPIRING_30' && (details.status !== 'EXPIRING_30' || b.stock <= 0)) return false;
         if (statusFilter === 'EXPIRING_60' && !['EXPIRING_30', 'EXPIRING_60'].includes(details.status)) return false;
         if (statusFilter === 'EXPIRING_90' && !['EXPIRING_30', 'EXPIRING_60', 'EXPIRING_90'].includes(details.status)) return false;
         if (statusFilter === 'FRESH' && details.status !== 'FRESH') return false;
@@ -344,11 +371,13 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
     selectedProductId,
     selectedCategoryId,
     selectedSupplierId,
+    suppliersList,
     expDateStart,
     expDateEnd,
     purchaseDateStart,
     purchaseDateEnd,
     statusFilter,
+    isPharmacyMode,
     today,
   ]);
 
@@ -431,44 +460,28 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
 
     const entries: BatchTx[] = [];
 
-    // 1. Initial Stock Registration (if any)
-    matchingBatches.forEach(b => {
-      if (b.initialStock > 0 || b.purchaseInvoiceNo === 'INITIAL-STOCK') {
-        entries.push({
-          id: `init-${b.id}`,
-          date: b.purchaseDate || today,
-          type: 'INITIAL',
-          typeLabel: language === 'bn' ? 'প্রারম্ভিক স্টক (Initial)' : 'Initial Stock',
-          docNo: b.purchaseInvoiceNo || 'INITIAL-STOCK',
-          partyName: b.supplierName || (language === 'bn' ? 'প্রারম্ভিক মজুদ' : 'Initial Stock'),
-          inQty: b.initialStock,
-          outQty: 0,
-          rate: b.purchasePrice,
-          total: b.initialStock * b.purchasePrice,
-          runningBalance: 0,
-          notes: `Batch ${b.batchNumber} registered`,
-        });
-      }
-    });
-
-    // 2. Purchases from Purchase Invoices
+    // 1. Purchases from Purchase Invoices (check first so we don't double-count initial stock)
+    const purchaseEntries: BatchTx[] = [];
+    let totalPurchasedFromInvoices = 0;
     purchaseInvoices.forEach(pur => {
       pur.items.forEach((it, itIdx) => {
         if (
-          it.batchNumber === targetBatchNumber ||
-          (targetProductIds.has(it.productId) && it.batchNumber === targetBatchNumber)
+          targetProductIds.has(it.productId) &&
+          (it.batchNumber === targetBatchNumber || (!it.batchNumber && matchingBatches.length === 1 && matchingBatches[0].purchaseInvoiceNo === pur.billNumber))
         ) {
-          entries.push({
+          const qty = Number(it.quantity) || 0;
+          totalPurchasedFromInvoices += qty;
+          purchaseEntries.push({
             id: `pur-${pur.id}-${itIdx}`,
             date: pur.date,
             type: 'PURCHASE',
             typeLabel: language === 'bn' ? 'ক্রয় চালান (Purchase)' : 'Purchase Bill',
             docNo: pur.billNumber || pur.supplierInvoiceNo || `PUR-${pur.id}`,
             partyName: pur.supplierName || 'Supplier',
-            inQty: Number(it.quantity) || 0,
+            inQty: qty,
             outQty: 0,
             rate: Number(it.purchasePrice) || 0,
-            total: Number(it.total) || (Number(it.quantity) * Number(it.purchasePrice)),
+            total: Number(it.total) || (qty * Number(it.purchasePrice || 0)),
             runningBalance: 0,
             notes: `Purchase Bill #${pur.billNumber || ''}`,
           });
@@ -476,14 +489,34 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
       });
     });
 
+    // 2. Initial Stock Registration (only add opening remainder not already covered by purchase bills)
+    const totalInitialDeclared = matchingBatches.reduce((sum, b) => sum + Math.max(0, Number(b.initialStock) || 0), 0);
+    const openingRemainder = Math.max(0, totalInitialDeclared - totalPurchasedFromInvoices);
+    if (openingRemainder > 0) {
+      entries.push({
+        id: `init-${primaryBatch.id}`,
+        date: primaryBatch.purchaseDate || today,
+        type: 'INITIAL',
+        typeLabel: language === 'bn' ? 'প্রারম্ভিক স্টক (Initial)' : 'Initial Stock',
+        docNo: primaryBatch.purchaseInvoiceNo || 'INITIAL-STOCK',
+        partyName: primaryBatch.supplierName || (language === 'bn' ? 'প্রারম্ভিক মজুদ' : 'Initial Stock'),
+        inQty: openingRemainder,
+        outQty: 0,
+        rate: primaryBatch.purchasePrice,
+        total: openingRemainder * primaryBatch.purchasePrice,
+        runningBalance: 0,
+        notes: `Batch ${primaryBatch.batchNumber} opening stock`,
+      });
+    }
+    entries.push(...purchaseEntries);
+
     // 3. Sales from Sale Invoices
     saleInvoices.forEach(inv => {
       inv.items.forEach((it, itIdx) => {
         if (
-          it.batchNumber === targetBatchNumber ||
-          (targetProductIds.has(it.productId) &&
-            (it.batchNumber === targetBatchNumber ||
-              matchingBatches.some(b => b.id === it.batchId)))
+          targetProductIds.has(it.productId) &&
+          (it.batchNumber === targetBatchNumber ||
+            matchingBatches.some(b => b.id === it.batchId))
         ) {
           entries.push({
             id: `sale-${inv.id}-${itIdx}`,
@@ -506,10 +539,7 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
     // 4. Sale Returns
     saleReturns.forEach(ret => {
       ret.items.forEach((it, itIdx) => {
-        if (
-          it.batchNumber === targetBatchNumber ||
-          (targetProductIds.has(it.productId) && it.batchNumber === targetBatchNumber)
-        ) {
+        if (targetProductIds.has(it.productId) && it.batchNumber === targetBatchNumber) {
           entries.push({
             id: `sret-${ret.id}-${itIdx}`,
             date: ret.date,
@@ -528,12 +558,31 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
       });
     });
 
-    // 5. Expired / Loss adjustments
+    // 5. Purchase Returns
+    purchaseReturns.forEach(pret => {
+      pret.items.forEach((it, itIdx) => {
+        if (targetProductIds.has(it.productId) && (!it.batchNumber || it.batchNumber === targetBatchNumber)) {
+          entries.push({
+            id: `pret-${pret.id}-${itIdx}`,
+            date: pret.date,
+            type: 'PURCHASE_RETURN',
+            typeLabel: language === 'bn' ? 'ক্রয় ফেরত (Pur. Return)' : 'Purchase Return',
+            docNo: pret.returnNumber,
+            partyName: pret.supplierName || 'Supplier Return',
+            inQty: 0,
+            outQty: Number(it.returnQuantity) || 0,
+            rate: Number(it.purchasePrice) || 0,
+            total: Number(it.totalRefund) || 0,
+            runningBalance: 0,
+            notes: `Supplier return for batch ${targetBatchNumber}`,
+          });
+        }
+      });
+    });
+
+    // 6. Expired / Loss adjustments
     expiredReturnLogs.forEach(log => {
-      if (
-        log.batchNumber === targetBatchNumber ||
-        (targetProductIds.has(log.productId) && log.batchNumber === targetBatchNumber)
-      ) {
+      if (targetProductIds.has(log.productId) && log.batchNumber === targetBatchNumber) {
         entries.push({
           id: `exp-${log.id}`,
           date: log.date,
@@ -750,14 +799,16 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
       ];
     });
 
-    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
+    const csvString = '\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
+    link.setAttribute('href', url);
     link.setAttribute('download', `DokanPro_Batch_Expiry_Report_${today}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // Export Specific Batch Date-wise Ledger to CSV
@@ -789,8 +840,8 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
 
     const rows = data.entriesDescending.map(e => [
       e.date,
-      `"${e.typeLabel}"`,
-      `"${e.docNo}"`,
+      `"${e.typeLabel.replace(/"/g, '""')}"`,
+      `"${e.docNo.replace(/"/g, '""')}"`,
       `"${e.partyName.replace(/"/g, '""')}"`,
       e.inQty,
       e.outQty,
@@ -800,14 +851,16 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
       `"${(e.notes || '').replace(/"/g, '""')}"`,
     ]);
 
-    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
+    const csvString = '\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
+    link.setAttribute('href', url);
     link.setAttribute('download', `Batch_${selectedBatchNumber}_Datewise_Purchase_Sales_Ledger_${today}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // Print Report Statement Handler
@@ -1003,6 +1056,19 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
   const handlePrintBatchTraceability = (batch: BatchReportItem) => {
     handlePrintBatchLedgerStatement(batch, 'DETAILED');
   };
+
+  useImperativeHandle(ref, () => ({
+    exportCsv: () => {
+      if (selectedBatchLedgerData) {
+        handleExportBatchLedgerCSV();
+      } else {
+        handleExportCSV();
+      }
+    },
+    printReport: (autoDownloadPdf = false) => {
+      handlePrintBatchReport(autoDownloadPdf);
+    },
+  }));
 
   return (
     <div className="space-y-4">
@@ -1270,8 +1336,24 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
           </div>
         </div>
 
-        {/* Secondary Date Range Filters */}
-        <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5 text-xs">
+        {/* Secondary Date Range & Category Filters */}
+        <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5 text-xs">
+          <div>
+            <label className="block text-[10px] font-bold text-slate-500 mb-1">
+              {language === 'bn' ? 'ক্যাটাগরি' : 'Category'}
+            </label>
+            <select
+              value={selectedCategoryId}
+              onChange={e => setSelectedCategoryId(e.target.value)}
+              className="w-full px-2.5 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white"
+            >
+              <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
+              {categories.map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+
           <div>
             <label className="block text-[10px] font-bold text-slate-500 mb-1">
               {language === 'bn' ? 'মেয়াদ তারিখ (হতে)' : 'Expiry Date From'}
@@ -1325,6 +1407,7 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
         {(searchQuery ||
           selectedBatchNumber !== 'ALL' ||
           selectedProductId !== 'ALL' ||
+          selectedCategoryId !== 'ALL' ||
           selectedSupplierId !== 'ALL' ||
           statusFilter !== 'ALL' ||
           expDateStart ||
@@ -1892,7 +1975,10 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
                         <div className="flex items-center gap-1.5">
                           <button
                             type="button"
-                            onClick={() => setSelectedBatchNumber(batch.batchNumber)}
+                            onClick={() => {
+                              setSelectedBatchNumber(batch.batchNumber);
+                              setSelectedProductId(batch.productId);
+                            }}
                             className="px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/80 dark:hover:bg-indigo-900/80 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 rounded font-mono font-bold text-xs cursor-pointer transition-all hover:scale-105"
                             title={language === 'bn' ? 'তারিখভিত্তিক ক্রয়-বিক্রয় হিসাব দেখতে ক্লিক করুন' : 'Click to inspect date-wise purchase & sales ledger'}
                           >
@@ -2007,7 +2093,10 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
                         <div className="flex items-center justify-center gap-1">
                           <button
                             type="button"
-                            onClick={() => setSelectedBatchNumber(batch.batchNumber)}
+                            onClick={() => {
+                              setSelectedBatchNumber(batch.batchNumber);
+                              setSelectedProductId(batch.productId);
+                            }}
                             className="p-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-950 text-emerald-600 dark:text-emerald-400 rounded-lg transition-colors cursor-pointer"
                             title={language === 'bn' ? 'তারিখভিত্তিক ক্রয় ও বিক্রয় লেজার' : 'View Date-wise Purchase & Sales Ledger'}
                           >
@@ -2023,7 +2112,7 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setProductForBatchManage(batch.productRef)}
+                            onClick={() => setProductForBatchManageId(batch.productId)}
                             className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-lg transition-colors cursor-pointer"
                             title={language === 'bn' ? 'ব্যাচ সম্পাদনা / পরিচালনা' : 'Manage Batches'}
                           >
@@ -2201,9 +2290,11 @@ export const BatchReportView: React.FC<BatchReportViewProps> = () => {
       {productForBatchManage && (
         <BatchManagementModal
           product={productForBatchManage}
-          onClose={() => setProductForBatchManage(null)}
+          onClose={() => setProductForBatchManageId(null)}
         />
       )}
     </div>
   );
-};
+});
+
+BatchReportView.displayName = 'BatchReportView';

@@ -365,7 +365,7 @@
     "dueReminderTemplate": "সম্মানিত {customer_name}, {store_name}-এ আপনার বর্তমান বকেয়া ৳{current_due} টাকা। অনুগ্রহ করে বকেয়া পরিশোধ করার জন্য বিনীত অনুরোধ করা হচ্ছে। যোগাযোগ: {store_phone}",
     "warrantyResolvedTemplate": "সম্মানিত {customer_name}, আপনার ওয়ারেন্টি ক্লেইম (টিকিট #{ticket_no}, {product_name}) সমাধান ({status}) হয়েছে। নোট: {note}। অনুগ্রহ করে দোকান থেকে পণ্যটি সংগ্রহ করার অনুরোধ করা হলো। ধন্যবাদ, {store_name}"
   },
-  "lastUpdatedEpoch": 1795325550804,
+  "lastUpdatedEpoch": 1795338126808,
   "is_reset_wipe": true,
   "deletedProductIds": [],
   "deletedEntityIds": {},

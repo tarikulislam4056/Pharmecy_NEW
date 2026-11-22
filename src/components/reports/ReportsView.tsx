@@ -1,8 +1,8 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { useTranslation } from '../../i18n/translations';
 import { DatePeriodFilter } from '../common/DatePeriodFilter';
-import { BatchReportView } from './BatchReportView';
+import { BatchReportView, BatchReportHandle } from './BatchReportView';
 import { ExpiryReportView } from './ExpiryReportView';
 import { GenericReportView } from './GenericReportView';
 import {
@@ -64,12 +64,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
     language,
     saleInvoices,
     purchaseInvoices,
+    saleReturns,
+    purchaseReturns,
+    expiredReturnLogs,
     products,
     categories,
     expenseVouchers,
     parties,
     dayBookEntries,
-    wallets,
     formatCurrency,
     openPrintModal,
     companySettings,
@@ -77,6 +79,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
     showToast,
   } = useApp();
   const { t } = useTranslation(language);
+  const batchReportRef = useRef<BatchReportHandle>(null);
 
   const isPharmacyMode = companySettings?.businessModule === 'pharmacy';
 
@@ -121,14 +124,37 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
 
   // General States & Stock Summary Filters
   const [selectedProductId, setSelectedProductId] = useState<string>(products[0]?.id || '');
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('ALL');
+  const [ledgerCategoryId, setLedgerCategoryId] = useState<string>('ALL');
+  const [ledgerSearch, setLedgerSearch] = useState<string>('');
   const [selectedPartyId, setSelectedPartyId] = useState<string>('');
-  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [partyTypeFilter, setPartyTypeFilter] = useState<'ALL' | 'CUSTOMER' | 'SUPPLIER'>('ALL');
+  const [partySearch, setPartySearch] = useState<string>('');
+  const [partyLedgerViewMode, setPartyLedgerViewMode] = useState<'TRANSACTIONS' | 'ITEMS'>('TRANSACTIONS');
+
+  // Auto-sync selectedProductId when products load or current product disappears
+  useEffect(() => {
+    if (products.length > 0 && (!selectedProductId || !products.some(p => p.id === selectedProductId))) {
+      setSelectedProductId(products[0].id);
+    }
+  }, [products, selectedProductId]);
 
   const [summaryCategoryId, setSummaryCategoryId] = useState<string>('ALL');
   const [summaryGeneric, setSummaryGeneric] = useState<string>('ALL');
   const [summaryManufacturer, setSummaryManufacturer] = useState<string>('ALL');
   const [summarySearch, setSummarySearch] = useState<string>('');
+
+  const getProductBatchSummary = (p: typeof products[number]): string => {
+    const batchNums: string[] = [];
+    if (p.batchNumber && p.batchNumber.trim()) batchNums.push(p.batchNumber.trim());
+    if (Array.isArray(p.batches)) {
+      p.batches.forEach(b => {
+        if (b.batchNumber && b.batchNumber.trim() && !batchNums.includes(b.batchNumber.trim())) {
+          batchNums.push(b.batchNumber.trim());
+        }
+      });
+    }
+    return batchNums.join(' | ') || '-';
+  };
 
   const filteredStockSummaryProducts = useMemo(() => {
     return products.filter(prod => {
@@ -141,6 +167,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
           prod.name.toLowerCase().includes(q) ||
           (prod.nameBn && prod.nameBn.toLowerCase().includes(q)) ||
           (prod.barcode && prod.barcode.toLowerCase().includes(q)) ||
+          (prod.batchNumber && prod.batchNumber.toLowerCase().includes(q)) ||
+          (prod.batches && prod.batches.some(b => b.batchNumber?.toLowerCase().includes(q))) ||
           (isPharmacyMode && prod.generic && prod.generic.toLowerCase().includes(q)) ||
           (prod.manufacturer && prod.manufacturer.toLowerCase().includes(q)) ||
           (prod.sku && prod.sku.toLowerCase().includes(q));
@@ -157,29 +185,49 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
 
   const availableSuppliers = useMemo(() => {
     const set = new Set<string>();
-    parties.filter(p => p.type === 'SUPPLIER').forEach(p => set.add(p.name));
+    parties.filter(p => p.type === 'SUPPLIER').forEach(p => {
+      if (p.name && p.name.trim()) set.add(p.name.trim());
+    });
     products.forEach(p => {
-      if (p.manufacturer) set.add(p.manufacturer.trim());
+      if (p.manufacturer && p.manufacturer.trim()) set.add(p.manufacturer.trim());
       p.batches?.forEach(b => {
-        if (b.supplierName) set.add(b.supplierName.trim());
+        if (b.supplierName && b.supplierName.trim()) set.add(b.supplierName.trim());
       });
     });
+    purchaseInvoices.forEach(pur => {
+      if (pur.supplierName && pur.supplierName.trim()) set.add(pur.supplierName.trim());
+    });
     return Array.from(set).sort();
-  }, [parties, products]);
+  }, [parties, products, purchaseInvoices]);
+
+  // Map productId -> set of supplier names from purchase invoices for accurate supplier filtering
+  const productSuppliersMap = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    purchaseInvoices.forEach(pur => {
+      const supName = (pur.supplierName || '').trim().toLowerCase();
+      if (!supName) return;
+      pur.items.forEach(it => {
+        if (!map.has(it.productId)) map.set(it.productId, new Set());
+        map.get(it.productId)!.add(supName);
+      });
+    });
+    return map;
+  }, [purchaseInvoices]);
 
   const lowStockReportItems = useMemo(() => {
     return products.filter(prod => {
       const stock = Number(prod.stock || 0);
-      const minLevel = Number(prod.reorderLevel || 0);
+      const minLevel = prod.reorderLevel !== undefined && Number(prod.reorderLevel) > 0 ? Number(prod.reorderLevel) : 5;
       if (stock > minLevel) return false;
 
       if (lowStockCategoryId !== 'ALL' && prod.categoryId !== lowStockCategoryId) return false;
 
       if (lowStockSupplierId !== 'ALL') {
-        const matchManufacturer = prod.manufacturer && prod.manufacturer.toLowerCase() === lowStockSupplierId.toLowerCase();
-        const matchBatchSupplier = prod.batches?.some(b => b.supplierName && b.supplierName.toLowerCase() === lowStockSupplierId.toLowerCase());
-        const matchPartySupplier = parties.some(pt => pt.type === 'SUPPLIER' && pt.name.toLowerCase() === lowStockSupplierId.toLowerCase());
-        if (!matchManufacturer && !matchBatchSupplier && !matchPartySupplier) return false;
+        const target = lowStockSupplierId.trim().toLowerCase();
+        const matchManufacturer = Boolean(prod.manufacturer && prod.manufacturer.trim().toLowerCase() === target);
+        const matchBatchSupplier = Boolean(prod.batches?.some(b => b.supplierName && b.supplierName.trim().toLowerCase() === target));
+        const matchPurchaseSupplier = Boolean(productSuppliersMap.get(prod.id)?.has(target));
+        if (!matchManufacturer && !matchBatchSupplier && !matchPurchaseSupplier) return false;
       }
 
       if (lowStockSearch.trim()) {
@@ -189,44 +237,58 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
           (prod.nameBn && prod.nameBn.toLowerCase().includes(q)) ||
           (prod.sku && prod.sku.toLowerCase().includes(q)) ||
           (prod.barcode && prod.barcode.toLowerCase().includes(q)) ||
+          (prod.batchNumber && prod.batchNumber.toLowerCase().includes(q)) ||
           (isPharmacyMode && prod.generic && prod.generic.toLowerCase().includes(q));
         if (!match) return false;
       }
 
       return true;
-    });
-  }, [products, parties, lowStockCategoryId, lowStockSupplierId, lowStockSearch, isPharmacyMode]);
+    }).sort((a, b) => Number(a.stock || 0) - Number(b.stock || 0));
+  }, [products, productSuppliersMap, lowStockCategoryId, lowStockSupplierId, lowStockSearch, isPharmacyMode]);
 
   const handleExportLowStockCSV = () => {
+    if (!canUserExportReportCsv(currentUser)) {
+      showToast(
+        language === 'bn'
+          ? 'আপনার রিপোর্ট থেকে CSV এক্সপোর্ট করার অনুমতি নেই।'
+          : 'You do not have permission to Export CSV from Reports & Analytics.',
+        'error'
+      );
+      return;
+    }
     const headers = [
       'Product ID',
       'Product Name',
       'SKU',
+      'Batch No',
       'Category',
       'Supplier / Manufacturer',
       'Current Stock',
       'Minimum Reorder Level',
       'Purchase Price',
       'Sales Price',
-      'Deficit'
+      'Deficit',
+      'Restock Cost',
     ];
     const rows = lowStockReportItems.map(p => {
       const stock = Number(p.stock || 0);
-      const minLevel = Number(p.reorderLevel || 0);
-      const deficit = minLevel - stock;
+      const minLevel = p.reorderLevel !== undefined && Number(p.reorderLevel) > 0 ? Number(p.reorderLevel) : 5;
+      const deficit = Math.max(0, minLevel - stock);
       const cat = categories.find(c => c.id === p.categoryId)?.name || p.categoryName || 'General';
       const supplier = p.manufacturer || p.batches?.[0]?.supplierName || 'General Supplier';
       return [
         p.id,
-        `"${p.name.replace(/"/g, '""')}"`,
+        p.name,
         p.sku || '',
-        `"${cat}"`,
-        `"${supplier}"`,
+        getProductBatchSummary(p),
+        cat,
+        supplier,
         stock,
         minLevel,
         p.purchasePrice,
         p.salesPrice,
-        deficit
+        deficit,
+        Number((deficit * Number(p.purchasePrice || 0)).toFixed(2)),
       ];
     });
     handleExportCSV('Low_Stock_Report', headers, rows);
@@ -257,6 +319,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
   const [salesSearch, setSalesSearch] = useState<string>('');
   const [salesStartDate, setSalesStartDate] = useState<string>('');
   const [salesEndDate, setSalesEndDate] = useState<string>('');
+  const [salesOnlyActive, setSalesOnlyActive] = useState<boolean>(false);
 
   // 2. Item Wise Purchase Filters
   const [purchaseItemId, setPurchaseItemId] = useState<string>('ALL');
@@ -266,6 +329,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
   const [purchaseSearch, setPurchaseSearch] = useState<string>('');
   const [purchaseStartDate, setPurchaseStartDate] = useState<string>('');
   const [purchaseEndDate, setPurchaseEndDate] = useState<string>('');
+  const [purchaseOnlyActive, setPurchaseOnlyActive] = useState<boolean>(false);
 
   // 3. Item Profit & Loss Filters
   const [pnlItemId, setPnlItemId] = useState<string>('ALL');
@@ -275,6 +339,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
   const [pnlSearch, setPnlSearch] = useState<string>('');
   const [pnlStartDate, setPnlStartDate] = useState<string>('');
   const [pnlEndDate, setPnlEndDate] = useState<string>('');
+  const [pnlOnlyActive, setPnlOnlyActive] = useState<boolean>(false);
 
   // Filtered Core Invoices based on Date Range
   const filteredSalesInvoices = useMemo(() => {
@@ -315,9 +380,18 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
     });
   }, [expenseVouchers, globalStartDate, globalEndDate]);
 
+  const filteredPnlExpenses = useMemo(() => {
+    const s = pnlStartDate || globalStartDate;
+    const e = pnlEndDate || globalEndDate;
+    return expenseVouchers.filter(exp => {
+      if (s && exp.date < s) return false;
+      if (e && exp.date > e) return false;
+      return true;
+    });
+  }, [expenseVouchers, pnlStartDate, pnlEndDate, globalStartDate, globalEndDate]);
+
   // Overall Global Aggregates (Filtered by Date Range)
   const totalSalesRevenue = filteredSalesInvoices.reduce((sum, s) => sum + s.grandTotal, 0);
-  const totalSalesCollected = filteredSalesInvoices.reduce((sum, s) => sum + s.paidAmount, 0);
   const totalCostOfGoodsSold = filteredSalesInvoices
     .flatMap(s => s.items)
     .reduce((sum, item) => {
@@ -334,13 +408,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       return sum + unitCost * baseQty;
     }, 0);
   const grossProfit = totalSalesRevenue - totalCostOfGoodsSold;
-  const grossMarginPct = totalSalesRevenue > 0 ? ((grossProfit / totalSalesRevenue) * 100).toFixed(1) : '0';
   const totalExpenses = filteredExpenseVouchers.reduce((sum, e) => sum + e.amount, 0);
   const netProfit = grossProfit - totalExpenses;
-  const netMarginPct = totalSalesRevenue > 0 ? ((netProfit / totalSalesRevenue) * 100).toFixed(1) : '0';
 
-  const totalPurchases = filteredPurchaseInvoices.reduce((sum, p) => sum + p.grandTotal, 0);
-  const totalPurchasesPaid = filteredPurchaseInvoices.reduce((sum, p) => sum + p.paidAmount, 0);
+  const pnlTotalExpenses = filteredPnlExpenses.reduce((sum, e) => sum + e.amount, 0);
+
   const totalStockAssetValue = products.reduce((sum, p) => sum + (Number(p.stock || 0) * Number(p.purchasePrice || 0)), 0);
   const totalRetailStockValue = products.reduce((sum, p) => sum + (Number(p.stock || 0) * Number(p.salesPrice || 0)), 0);
 
@@ -366,14 +438,18 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       .map(prod => {
         let soldQty = 0;
         let revenue = 0;
+        let cogs = 0;
         let invoiceCount = 0;
 
         filteredSalesInvoices.forEach(inv => {
           let itemFoundInInv = false;
           inv.items.forEach(it => {
             if (it.productId === prod.id) {
-              soldQty += getBaseQuantity(it, prod);
+              const baseQty = getBaseQuantity(it, prod);
+              soldQty += baseQty;
               revenue += it.total;
+              const unitCost = (it.purchasePrice !== undefined && it.purchasePrice > 0) ? it.purchasePrice : (prod.purchasePrice || 0);
+              cogs += baseQty * unitCost;
               itemFoundInInv = true;
             }
           });
@@ -381,7 +457,6 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         });
 
         const avgPrice = soldQty > 0 ? revenue / soldQty : prod.salesPrice;
-        const cogs = soldQty * prod.purchasePrice;
         const itemProfit = revenue - cogs;
         const margin = revenue > 0 ? ((itemProfit / revenue) * 100).toFixed(1) : '0';
 
@@ -395,8 +470,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
           profit: itemProfit,
           margin,
         };
-      });
-  }, [products, filteredSalesInvoices, salesCategoryId, salesGeneric, salesManufacturer, salesSearch, isPharmacyMode]);
+      })
+      .filter(item => !salesOnlyActive || item.soldQty > 0)
+      .sort((a, b) => b.revenue - a.revenue || b.soldQty - a.soldQty);
+  }, [products, filteredSalesInvoices, salesCategoryId, salesGeneric, salesManufacturer, salesSearch, salesOnlyActive, isPharmacyMode]);
 
   const selectedSalesProduct = useMemo(() => {
     if (salesItemId === 'ALL') return null;
@@ -491,8 +568,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
           avgCost,
           billCount,
         };
-      });
-  }, [products, filteredPurchaseInvoices, purchaseCategoryId, purchaseGeneric, purchaseManufacturer, purchaseSearch, isPharmacyMode]);
+      })
+      .filter(item => !purchaseOnlyActive || item.purchasedQty > 0)
+      .sort((a, b) => b.cost - a.cost || b.purchasedQty - a.purchasedQty);
+  }, [products, filteredPurchaseInvoices, purchaseCategoryId, purchaseGeneric, purchaseManufacturer, purchaseSearch, purchaseOnlyActive, isPharmacyMode]);
 
   const selectedPurchaseProduct = useMemo(() => {
     if (purchaseItemId === 'ALL') return null;
@@ -591,8 +670,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
           profit,
           margin,
         };
-      });
-  }, [products, filteredPnlInvoices, pnlCategoryId, pnlGeneric, pnlManufacturer, pnlSearch, isPharmacyMode]);
+      })
+      .filter(item => !pnlOnlyActive || item.soldQty > 0)
+      .sort((a, b) => b.revenue - a.revenue || b.profit - a.profit);
+  }, [products, filteredPnlInvoices, pnlCategoryId, pnlGeneric, pnlManufacturer, pnlSearch, pnlOnlyActive, isPharmacyMode]);
 
   const selectedPnlProduct = useMemo(() => {
     if (pnlItemId === 'ALL') return null;
@@ -649,10 +730,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
     return entries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [selectedPnlProduct, filteredPnlInvoices]);
 
+  const totalPnlSoldQtyOverall = itemPnlData.reduce((sum, item) => sum + item.soldQty, 0);
   const totalPnlRevenueOverall = itemPnlData.reduce((sum, item) => sum + item.revenue, 0);
   const totalPnlCogsOverall = itemPnlData.reduce((sum, item) => sum + item.cogs, 0);
   const totalPnlProfitOverall = totalPnlRevenueOverall - totalPnlCogsOverall;
   const totalPnlMarginOverall = totalPnlRevenueOverall > 0 ? ((totalPnlProfitOverall / totalPnlRevenueOverall) * 100).toFixed(1) : '0';
+  const pnlNetBusinessProfit = totalPnlProfitOverall - pnlTotalExpenses;
 
   // -------------------------------------------------------------
   // Other Tab Data (Categories, Ledger, Party)
@@ -701,154 +784,396 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
     });
   }, [categories, filteredPurchaseInvoices, products]);
 
-  // Selected Product Ledger entries (Filtered by Date Range)
-  const selectedProdObj = products.find(p => p.id === selectedProductId) || products[0];
+  // Filtered products for Item Ledger selector
+  const ledgerFilteredProducts = useMemo(() => {
+    return products.filter(p => {
+      if (ledgerCategoryId !== 'ALL' && p.categoryId !== ledgerCategoryId) return false;
+      if (ledgerSearch.trim()) {
+        const q = ledgerSearch.toLowerCase();
+        const match =
+          p.name.toLowerCase().includes(q) ||
+          (p.nameBn && p.nameBn.toLowerCase().includes(q)) ||
+          (p.sku && p.sku.toLowerCase().includes(q)) ||
+          (p.barcode && p.barcode.toLowerCase().includes(q)) ||
+          (isPharmacyMode && p.generic && p.generic.toLowerCase().includes(q));
+        if (!match) return false;
+      }
+      return true;
+    });
+  }, [products, ledgerCategoryId, ledgerSearch, isPharmacyMode]);
+
+  // Selected Product Ledger entries (Filtered consistently by Global Date Range + includes returns)
+  const selectedProdObj = products.find(p => p.id === selectedProductId) || ledgerFilteredProducts[0] || products[0];
   const prodLedgerEntries = useMemo(() => {
-    const entries = [
-      ...filteredSalesInvoices.flatMap(inv =>
-        inv.items
-          .filter(it => it.productId === selectedProdObj?.id)
-          .map(it => {
-            const baseQty = getBaseQuantity(it, selectedProdObj);
-            return {
-              date: inv.date,
-              ref: inv.invoiceNumber,
-              type: 'SALE',
-              description: `Sale to ${inv.customerName}${it.unit && selectedProdObj && it.unit !== selectedProdObj.unit ? ` (${it.quantity} ${it.unit})` : ''}`,
-              inQty: 0,
-              outQty: baseQty,
-              rate: baseQty > 0 ? it.total / baseQty : it.unitPrice,
-              total: it.total,
-            };
-          })
-      ),
-      ...filteredPurchaseInvoices.flatMap(inv =>
-        inv.items
-          .filter(it => it.productId === selectedProdObj?.id)
-          .map(it => {
-            const baseQty = getBaseQuantity(it, selectedProdObj);
-            return {
-              date: inv.date,
-              ref: inv.billNumber,
-              type: 'PURCHASE',
-              description: `Purchase from ${inv.supplierName}${it.unit && selectedProdObj && it.unit !== selectedProdObj.unit ? ` (${it.quantity} ${it.unit})` : ''}`,
-              inQty: baseQty,
+    if (!selectedProdObj) return [];
+
+    const inDateRange = (dateStr: string) => {
+      if (globalStartDate && dateStr < globalStartDate) return false;
+      if (globalEndDate && dateStr > globalEndDate) return false;
+      return true;
+    };
+
+    const rawEntries = [
+      ...saleInvoices
+        .filter(inv => inDateRange(inv.date))
+        .flatMap(inv =>
+          inv.items
+            .filter(it => it.productId === selectedProdObj.id)
+            .map(it => {
+              const baseQty = getBaseQuantity(it, selectedProdObj);
+              return {
+                date: inv.date,
+                sortTime: new Date(inv.createdAt || inv.date).getTime(),
+                ref: inv.invoiceNumber,
+                type: 'SALE',
+                description: `Sale to ${inv.customerName}${it.unit && it.unit !== selectedProdObj.unit ? ` (${it.quantity} ${it.unit})` : ''}`,
+                inQty: 0,
+                outQty: baseQty,
+                rate: baseQty > 0 ? it.total / baseQty : it.unitPrice,
+                total: it.total,
+              };
+            })
+        ),
+      ...purchaseInvoices
+        .filter(inv => inDateRange(inv.date))
+        .flatMap(inv =>
+          inv.items
+            .filter(it => it.productId === selectedProdObj.id)
+            .map(it => {
+              const baseQty = getBaseQuantity(it, selectedProdObj);
+              return {
+                date: inv.date,
+                sortTime: new Date(inv.createdAt || inv.date).getTime(),
+                ref: inv.billNumber,
+                type: 'PURCHASE',
+                description: `Purchase from ${inv.supplierName}${it.unit && it.unit !== selectedProdObj.unit ? ` (${it.quantity} ${it.unit})` : ''}`,
+                inQty: baseQty,
+                outQty: 0,
+                rate: baseQty > 0 ? it.total / baseQty : it.purchasePrice,
+                total: it.total,
+              };
+            })
+        ),
+      ...saleReturns
+        .filter(ret => inDateRange(ret.date))
+        .flatMap(ret =>
+          ret.items
+            .filter(it => it.productId === selectedProdObj.id)
+            .map(it => ({
+              date: ret.date,
+              sortTime: new Date(ret.createdAt || ret.date).getTime(),
+              ref: ret.returnNumber,
+              type: 'SALE_RETURN',
+              description: `Sales Return from ${ret.customerName}`,
+              inQty: Number(it.returnQuantity) || 0,
               outQty: 0,
-              rate: baseQty > 0 ? it.total / baseQty : it.purchasePrice,
-              total: it.total,
-            };
-          })
-      ),
+              rate: Number(it.unitPrice) || 0,
+              total: Number(it.totalRefund) || 0,
+            }))
+        ),
+      ...purchaseReturns
+        .filter(pret => inDateRange(pret.date))
+        .flatMap(pret =>
+          pret.items
+            .filter(it => it.productId === selectedProdObj.id)
+            .map(it => ({
+              date: pret.date,
+              sortTime: new Date(pret.createdAt || pret.date).getTime(),
+              ref: pret.returnNumber,
+              type: 'PURCHASE_RETURN',
+              description: `Purchase Return to ${pret.supplierName}`,
+              inQty: 0,
+              outQty: Number(it.returnQuantity) || 0,
+              rate: Number(it.purchasePrice) || 0,
+              total: Number(it.totalRefund) || 0,
+            }))
+        ),
+      ...expiredReturnLogs
+        .filter(log => log.productId === selectedProdObj.id && inDateRange(log.date))
+        .map(log => ({
+          date: log.date,
+          sortTime: new Date(log.createdAt || log.date).getTime(),
+          ref: log.batchNumber || 'EXPIRED',
+          type: 'EXPIRED_OUT',
+          description: `Expired / Loss Write-Off (${log.notes || log.actionType || 'Adjustment'})`,
+          inQty: 0,
+          outQty: Number(log.quantity) || 0,
+          rate: Number(log.purchasePrice) || 0,
+          total: Number(log.totalValue) || 0,
+        })),
     ];
-    return entries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [filteredSalesInvoices, filteredPurchaseInvoices, selectedProdObj]);
+
+    // Sort ascending to calculate running stock movement balance, then reverse for newest-first display
+    rawEntries.sort((a, b) => a.sortTime - b.sortTime);
+    let running = 0;
+    const withBalance = rawEntries.map(entry => {
+      running += entry.inQty - entry.outQty;
+      return { ...entry, runningBalance: running };
+    });
+    return withBalance.reverse();
+  }, [saleInvoices, purchaseInvoices, saleReturns, purchaseReturns, expiredReturnLogs, selectedProdObj, globalStartDate, globalEndDate]);
+
+  // Filtered parties list for Party Ledger dropdown
+  const filteredPartiesList = useMemo(() => {
+    return parties.filter(p => {
+      if (partyTypeFilter !== 'ALL' && p.type !== partyTypeFilter) return false;
+      if (partySearch.trim()) {
+        const q = partySearch.toLowerCase();
+        const match =
+          p.name.toLowerCase().includes(q) ||
+          (p.phone && p.phone.toLowerCase().includes(q)) ||
+          (p.address && p.address.toLowerCase().includes(q));
+        if (!match) return false;
+      }
+      return true;
+    });
+  }, [parties, partyTypeFilter, partySearch]);
 
   // Party transaction & item ledger (Filtered by Date Range)
   const selectedPartyObj = parties.find(p => p.id === selectedPartyId);
   const partyTransactions = useMemo(() => {
     if (!selectedPartyObj) return [];
-    
-    const ledgerEntries: any[] = [];
 
-    // 1. Sales Invoices (Customer Debit)
+    const ledgerEntries: {
+      date: string;
+      type: string;
+      flow: string;
+      voucherNo: string;
+      remarks: string;
+      debit: number;
+      credit: number;
+      amount: number;
+      walletName: string;
+      createdAt: string;
+      runningBalance?: number;
+    }[] = [];
+
+    // 1. Sales Invoices (Customer Debit) & Sale Returns (Customer Credit if adjusted to due)
     if (selectedPartyObj.type === 'CUSTOMER') {
       saleInvoices.forEach(sale => {
         if (sale.customerId === selectedPartyObj.id && sale.paymentMethod !== 'INSTALLMENT' && !sale.isInstallmentSale) {
           ledgerEntries.push({
             date: sale.date,
             type: 'SALE_INVOICE',
-            flow: 'OUT', // Custom mapping for UI: it's a charge (Debit)
+            flow: 'OUT',
             voucherNo: sale.invoiceNumber,
-            remarks: `Total Bill (Items: ${sale.items.length})`,
+            remarks: `Sale Bill (${sale.items.length} items${sale.dueAmount > 0 ? `, Due: ${sale.dueAmount}` : ''})`,
             debit: sale.grandTotal,
             credit: 0,
-            amount: sale.grandTotal, // For compatibility
+            amount: sale.grandTotal,
             walletName: '-',
-            createdAt: sale.createdAt || sale.date
+            createdAt: sale.createdAt || sale.date,
+          });
+        }
+      });
+
+      saleReturns.forEach(ret => {
+        if (ret.customerId === selectedPartyObj.id && ret.totalReturnAmount > 0 && ret.refundMethod === 'DUE') {
+          ledgerEntries.push({
+            date: ret.date,
+            type: 'SALE_RETURN',
+            flow: 'IN',
+            voucherNo: ret.returnNumber,
+            remarks: `Sales Return adjusted to due (${ret.items.length} items)`,
+            debit: 0,
+            credit: ret.totalReturnAmount,
+            amount: ret.totalReturnAmount,
+            walletName: 'Due Adjust',
+            createdAt: ret.createdAt || ret.date,
           });
         }
       });
     }
 
-    // 2. Purchase Invoices (Supplier Credit)
+    // 2. Purchase Invoices (Supplier Credit) & Purchase Returns (Supplier Debit if adjusted to due)
     if (selectedPartyObj.type === 'SUPPLIER') {
       purchaseInvoices.forEach(pur => {
         if (pur.supplierId === selectedPartyObj.id) {
           ledgerEntries.push({
             date: pur.date,
             type: 'PURCHASE_BILL',
-            flow: 'IN', // Custom mapping for UI: it's a credit to supplier
+            flow: 'IN',
             voucherNo: pur.billNumber,
-            remarks: `Total Bill (Items: ${pur.items.length})`,
+            remarks: `Purchase Bill (${pur.items.length} items${pur.dueAmount > 0 ? `, Due: ${pur.dueAmount}` : ''})`,
             debit: 0,
             credit: pur.grandTotal,
             amount: pur.grandTotal,
             walletName: '-',
-            createdAt: pur.createdAt || pur.date
+            createdAt: pur.createdAt || pur.date,
+          });
+        }
+      });
+
+      purchaseReturns.forEach(pret => {
+        if (pret.supplierId === selectedPartyObj.id && pret.totalReturnAmount > 0 && pret.refundMethod === 'DUE') {
+          ledgerEntries.push({
+            date: pret.date,
+            type: 'PURCHASE_RETURN',
+            flow: 'OUT',
+            voucherNo: pret.returnNumber,
+            remarks: `Purchase Return adjusted to payable (${pret.items.length} items)`,
+            debit: pret.totalReturnAmount,
+            credit: 0,
+            amount: pret.totalReturnAmount,
+            walletName: 'Due Adjust',
+            createdAt: pret.createdAt || pret.date,
           });
         }
       });
     }
 
-    // 3. Cash flows from dayBookEntries (Payments)
+    // 3. Cash/Bank/MFS flows from dayBookEntries
     dayBookEntries.forEach(d => {
-      const matchParty = d.partyId === selectedPartyObj.id || (d.partyName === selectedPartyObj.name);
+      const matchParty = d.partyId === selectedPartyObj.id || (d.partyName && d.partyName === selectedPartyObj.name);
       if (matchParty && d.amount > 0) {
         if (selectedPartyObj.type === 'CUSTOMER') {
           ledgerEntries.push({
             date: d.date,
             type: d.type,
             flow: d.flow,
-            voucherNo: d.referenceNo || d.voucherNo,
+            voucherNo: d.referenceNo || d.voucherNo || d.id,
             remarks: d.remarks || 'Payment',
-            debit: d.flow === 'OUT' ? d.amount : 0, // Refund
-            credit: d.flow === 'IN' ? d.amount : 0, // Payment Received
+            debit: d.flow === 'OUT' ? d.amount : 0,
+            credit: d.flow === 'IN' ? d.amount : 0,
             amount: d.amount,
             walletName: d.walletName || '-',
-            createdAt: d.createdAt || d.date
+            createdAt: d.createdAt || d.date,
           });
         } else if (selectedPartyObj.type === 'SUPPLIER') {
           ledgerEntries.push({
             date: d.date,
             type: d.type,
             flow: d.flow,
-            voucherNo: d.referenceNo || d.voucherNo,
+            voucherNo: d.referenceNo || d.voucherNo || d.id,
             remarks: d.remarks || 'Payment',
-            debit: d.flow === 'OUT' ? d.amount : 0, // Payment Made
-            credit: d.flow === 'IN' ? d.amount : 0, // Refund received
+            debit: d.flow === 'OUT' ? d.amount : 0,
+            credit: d.flow === 'IN' ? d.amount : 0,
             amount: d.amount,
             walletName: d.walletName || '-',
-            createdAt: d.createdAt || d.date
+            createdAt: d.createdAt || d.date,
           });
         }
       }
     });
 
-    const sorted = ledgerEntries.sort((a, b) => {
-      const timeA = new Date(a.createdAt || a.date).getTime();
-      const timeB = new Date(b.createdAt || b.date).getTime();
-      return timeB - timeA;
+    // Sort ascending to calculate running balance accurately from Opening Balance
+    ledgerEntries.sort((a, b) => new Date(a.createdAt || a.date).getTime() - new Date(b.createdAt || b.date).getTime());
+    let running = Number(selectedPartyObj.openingBalance || 0);
+    const withRunning = ledgerEntries.map(entry => {
+      if (selectedPartyObj.type === 'CUSTOMER') {
+        running = Math.max(0, running + entry.debit - entry.credit);
+      } else {
+        running = Math.max(0, running + entry.credit - entry.debit);
+      }
+      return { ...entry, runningBalance: running };
     });
 
-    return sorted.filter(d => {
-      if (globalStartDate && d.date < globalStartDate) return false;
-      if (globalEndDate && d.date > globalEndDate) return false;
+    return withRunning
+      .filter(d => {
+        if (globalStartDate && d.date < globalStartDate) return false;
+        if (globalEndDate && d.date > globalEndDate) return false;
+        return true;
+      })
+      .reverse();
+  }, [dayBookEntries, saleInvoices, purchaseInvoices, saleReturns, purchaseReturns, selectedPartyObj, globalStartDate, globalEndDate]);
+
+  // Party Item Breakdown (By Party Item & Transaction)
+  const partyItemSummary = useMemo(() => {
+    if (!selectedPartyObj) return [];
+
+    const inDateRange = (dateStr: string) => {
+      if (globalStartDate && dateStr < globalStartDate) return false;
+      if (globalEndDate && dateStr > globalEndDate) return false;
       return true;
-    });
-  }, [dayBookEntries, saleInvoices, purchaseInvoices, selectedPartyObj, globalStartDate, globalEndDate]);
+    };
 
-  // CSV Export Handler
+    const itemMap = new Map<string, {
+      productId: string;
+      productName: string;
+      categoryName: string;
+      unit: string;
+      docCount: number;
+      totalQty: number;
+      totalAmount: number;
+      lastDate: string;
+    }>();
+
+    if (selectedPartyObj.type === 'CUSTOMER') {
+      saleInvoices
+        .filter(s => s.customerId === selectedPartyObj.id && inDateRange(s.date))
+        .forEach(s => {
+          s.items.forEach(it => {
+            const prod = products.find(p => p.id === it.productId);
+            const baseQty = getBaseQuantity(it, prod);
+            const existing = itemMap.get(it.productId) || {
+              productId: it.productId,
+              productName: it.productName || prod?.name || 'Unknown Item',
+              categoryName: prod?.categoryName || '-',
+              unit: prod?.unit || it.unit || 'Pcs',
+              docCount: 0,
+              totalQty: 0,
+              totalAmount: 0,
+              lastDate: s.date,
+            };
+            existing.docCount += 1;
+            existing.totalQty += baseQty;
+            existing.totalAmount += Number(it.total || 0);
+            if (s.date > existing.lastDate) existing.lastDate = s.date;
+            itemMap.set(it.productId, existing);
+          });
+        });
+    } else {
+      purchaseInvoices
+        .filter(p => p.supplierId === selectedPartyObj.id && inDateRange(p.date))
+        .forEach(p => {
+          p.items.forEach(it => {
+            const prod = products.find(pr => pr.id === it.productId);
+            const baseQty = getBaseQuantity(it, prod);
+            const existing = itemMap.get(it.productId) || {
+              productId: it.productId,
+              productName: it.productName || prod?.name || 'Unknown Item',
+              categoryName: prod?.categoryName || '-',
+              unit: prod?.unit || it.unit || 'Pcs',
+              docCount: 0,
+              totalQty: 0,
+              totalAmount: 0,
+              lastDate: p.date,
+            };
+            existing.docCount += 1;
+            existing.totalQty += baseQty;
+            existing.totalAmount += Number(it.total || 0);
+            if (p.date > existing.lastDate) existing.lastDate = p.date;
+            itemMap.set(it.productId, existing);
+          });
+        });
+    }
+
+    return Array.from(itemMap.values())
+      .map(row => ({
+        ...row,
+        avgRate: row.totalQty > 0 ? row.totalAmount / row.totalQty : 0,
+      }))
+      .sort((a, b) => b.totalAmount - a.totalAmount);
+  }, [selectedPartyObj, saleInvoices, purchaseInvoices, products, globalStartDate, globalEndDate]);
+
+  // CSV Export Handler (Blob + UTF-8 BOM for Bengali support & safe special characters)
   const handleExportCSV = (reportName: string, headers: string[], rows: (string | number)[][]) => {
-    const csvContent =
-      'data:text/csv;charset=utf-8,' +
-      [headers.join(','), ...rows.map(r => r.map(c => `"${c}"`).join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
+    const escCsv = (val: string | number) => {
+      const str = String(val ?? '').replace(/\r?\n/g, ' ');
+      return `"${str.replace(/"/g, '""')}"`;
+    };
+    const csvString =
+      '\uFEFF' +
+      [headers.map(escCsv).join(','), ...rows.map(r => r.map(escCsv).join(','))].join('\n');
+    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
+    link.setAttribute('href', url);
     link.setAttribute('download', `DokanPro_${reportName}_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // Dynamic Print Handler for Selected Report
@@ -876,9 +1201,24 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
     }
 
     const printDate = new Date().toLocaleDateString('en-GB');
+    const globalDateRangeText =
+      globalStartDate && globalEndDate
+        ? `${globalStartDate} to ${globalEndDate}`
+        : globalStartDate
+        ? `From ${globalStartDate}`
+        : globalEndDate
+        ? `Until ${globalEndDate}`
+        : (language === 'bn' ? 'সকল সময়' : 'All Time');
+
+    if (reportType === 'batch-report') {
+      batchReportRef.current?.printReport(autoDownloadPdf);
+      return;
+    }
 
     if (reportType === 'summary') {
       const reportTitle = language === 'bn' ? 'স্টক সারসংক্ষেপ ও ইনভেন্টরি মূল্যায়ন' : 'STOCK SUMMARY & VALUATION REPORT';
+      const filteredCostVal = filteredStockSummaryProducts.reduce((s, p) => s + Number(p.stock || 0) * Number(p.purchasePrice || 0), 0);
+      const filteredRetailVal = filteredStockSummaryProducts.reduce((s, p) => s + Number(p.stock || 0) * Number(p.salesPrice || 0), 0);
       openPrintModal({
         type: 'PRODUCT_LIST',
         title: reportTitle,
@@ -886,17 +1226,82 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         data: {
           reportHeading: reportTitle,
           generatedDate: printDate,
-          totalProducts: products.length,
-          totalUnits: products.reduce((s, p) => s + p.stock, 0),
-          totalCostValue: totalStockAssetValue,
-          totalRetailValue: totalRetailStockValue,
-          products,
+          totalProducts: filteredStockSummaryProducts.length,
+          totalUnits: filteredStockSummaryProducts.reduce((s, p) => s + Number(p.stock || 0), 0),
+          totalCostValue: filteredCostVal,
+          totalRetailValue: filteredRetailVal,
+          products: filteredStockSummaryProducts,
+        },
+      });
+    } else if (reportType === 'low-stock') {
+      const reportTitle = language === 'bn' ? 'স্টক অ্যালার্ট / কম স্টক রিপোর্ট' : 'LOW STOCK & REORDER ALERT REPORT';
+      const totalDeficit = lowStockReportItems.reduce((sum, p) => {
+        const minLevel = p.reorderLevel !== undefined && Number(p.reorderLevel) > 0 ? Number(p.reorderLevel) : 5;
+        return sum + Math.max(0, minLevel - Number(p.stock || 0));
+      }, 0);
+      const totalRestockCost = lowStockReportItems.reduce((sum, p) => {
+        const minLevel = p.reorderLevel !== undefined && Number(p.reorderLevel) > 0 ? Number(p.reorderLevel) : 5;
+        return sum + Math.max(0, minLevel - Number(p.stock || 0)) * Number(p.purchasePrice || 0);
+      }, 0);
+      openPrintModal({
+        type: 'REPORT',
+        title: reportTitle,
+        autoDownloadPdf,
+        data: {
+          reportTitle,
+          period: `${language === 'bn' ? 'তারিখ:' : 'As of:'} ${printDate}`,
+          filters: [
+            {
+              label: language === 'bn' ? 'ক্যাটাগরি' : 'Category',
+              value: lowStockCategoryId === 'ALL' ? (language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories') : (categories.find(c => c.id === lowStockCategoryId)?.name || lowStockCategoryId),
+            },
+            {
+              label: language === 'bn' ? 'সাপ্লায়ার' : 'Supplier',
+              value: lowStockSupplierId === 'ALL' ? (language === 'bn' ? 'সকল সাপ্লায়ার' : 'All Suppliers') : lowStockSupplierId,
+            },
+          ],
+          kpis: [
+            { label: language === 'bn' ? 'কম স্টক পণ্য' : 'Low Stock Items', value: `${lowStockReportItems.length}` },
+            { label: language === 'bn' ? 'মোট ঘাটতি ইউনিট' : 'Total Deficit Units', value: formatCleanNumber(totalDeficit) },
+            { label: language === 'bn' ? 'পুনরায় পূরণের খরচ' : 'Est. Restock Cost', value: totalRestockCost },
+          ],
+          columns: [
+            { header: language === 'bn' ? 'পণ্যের নাম' : 'Product Name', key: 'name' },
+            { header: language === 'bn' ? 'ব্যাচ নং' : 'Batch No', key: 'batchNo' },
+            { header: language === 'bn' ? 'ক্যাটাগরি' : 'Category', key: 'category' },
+            { header: language === 'bn' ? 'সাপ্লায়ার' : 'Supplier', key: 'supplier' },
+            { header: language === 'bn' ? 'বর্তমান স্টক' : 'Stock', key: 'stock', align: 'center', format: 'number' },
+            { header: language === 'bn' ? 'মিনিমাম লেভেল' : 'Min Level', key: 'minLevel', align: 'center', format: 'number' },
+            { header: language === 'bn' ? 'ঘাটতি' : 'Deficit', key: 'deficit', align: 'center', format: 'number' },
+            { header: language === 'bn' ? 'পূরণের খরচ (৳)' : 'Restock Cost', key: 'restockCost', align: 'right', format: 'currency' },
+          ],
+          rows: lowStockReportItems.map(p => {
+            const stock = Number(p.stock || 0);
+            const minLevel = p.reorderLevel !== undefined && Number(p.reorderLevel) > 0 ? Number(p.reorderLevel) : 5;
+            const deficit = Math.max(0, minLevel - stock);
+            return {
+              name: p.name,
+              batchNo: getProductBatchSummary(p),
+              category: categories.find(c => c.id === p.categoryId)?.name || p.categoryName || 'General',
+              supplier: p.manufacturer || p.batches?.[0]?.supplierName || 'General Supplier',
+              stock,
+              minLevel,
+              deficit,
+              restockCost: deficit * Number(p.purchasePrice || 0),
+            };
+          }),
+          totals: { deficit: totalDeficit, restockCost: totalRestockCost },
         },
       });
     } else if (reportType === 'ledger') {
-      if (!selectedProdObj) return;
-      const reportTitle = language === 'bn' 
-        ? `আইটেম মুভমেন্ট লেজার - ${selectedProdObj.name}` 
+      if (!selectedProdObj) {
+        showToast(language === 'bn' ? 'প্রথমে একটি পণ্য নির্বাচন করুন।' : 'Please select a product first.', 'warning');
+        return;
+      }
+      const totalIn = prodLedgerEntries.reduce((s, e) => s + e.inQty, 0);
+      const totalOut = prodLedgerEntries.reduce((s, e) => s + e.outQty, 0);
+      const reportTitle = language === 'bn'
+        ? `আইটেম মুভমেন্ট লেজার - ${selectedProdObj.name}`
         : `ITEM STOCK & MOVEMENT LEDGER - ${selectedProdObj.name.toUpperCase()}`;
       openPrintModal({
         type: 'REPORT',
@@ -904,17 +1309,17 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         autoDownloadPdf,
         data: {
           reportTitle: reportTitle,
-          period: language === 'bn' ? 'সম্পূর্ণ লেনদেন হিস্ট্রি' : 'All Time Movement History',
+          period: globalDateRangeText,
           filters: [
             { label: language === 'bn' ? 'পণ্যের নাম' : 'Item Name', value: selectedProdObj.name },
             { label: language === 'bn' ? 'ক্যাটাগরি' : 'Category', value: selectedProdObj.categoryName },
-            { label: language === 'bn' ? 'বারকোড' : 'Barcode', value: selectedProdObj.barcode || '-' },
+            { label: language === 'bn' ? 'ব্যাচ নং' : 'Batch No', value: getProductBatchSummary(selectedProdObj) },
             { label: language === 'bn' ? 'বর্তমান স্টক' : 'Current Stock', value: formatStockWithUnit(selectedProdObj.stock, selectedProdObj) },
           ],
           kpis: [
             { label: language === 'bn' ? 'বর্তমান স্টক ব্যালেন্স' : 'Current Stock Balance', value: formatStockWithUnit(selectedProdObj.stock, selectedProdObj) },
-            { label: language === 'bn' ? 'ক্রয়মূল্য' : 'Cost Price', value: selectedProdObj.purchasePrice },
-            { label: language === 'bn' ? 'বিক্রয়মূল্য' : 'Sales Price', value: selectedProdObj.salesPrice },
+            { label: language === 'bn' ? 'মোট ইন (In)' : 'Total In Qty', value: `${formatCleanNumber(totalIn)} ${selectedProdObj.unit}` },
+            { label: language === 'bn' ? 'মোট আউট (Out)' : 'Total Out Qty', value: `${formatCleanNumber(totalOut)} ${selectedProdObj.unit}` },
             { label: language === 'bn' ? 'মোট স্টক মূল্য' : 'Total Stock Valuation', value: selectedProdObj.stock * selectedProdObj.purchasePrice },
           ],
           columns: [
@@ -928,28 +1333,32 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             { header: language === 'bn' ? 'মোট টাকা (৳)' : 'Total Amount', key: 'total', align: 'right', format: 'currency' },
           ],
           rows: prodLedgerEntries,
+          totals: { inQty: totalIn, outQty: totalOut },
         },
       });
     } else if (reportType === 'item-sales') {
       const isSingle = selectedSalesProduct !== null;
+      const effStart = salesStartDate || globalStartDate;
+      const effEnd = salesEndDate || globalEndDate;
       const dateRangeText =
-        salesStartDate && salesEndDate
-          ? `${salesStartDate} to ${salesEndDate}`
-          : salesStartDate
-          ? `From ${salesStartDate}`
-          : salesEndDate
-          ? `Until ${salesEndDate}`
+        effStart && effEnd
+          ? `${effStart} to ${effEnd}`
+          : effStart
+          ? `From ${effStart}`
+          : effEnd
+          ? `Until ${effEnd}`
           : (language === 'bn' ? 'সকল সময়' : 'All Time');
 
       if (isSingle && selectedSalesProduct) {
         const totalDrillQty = selectedSalesProductDrilldown.reduce((sum, r) => sum + r.baseQuantity, 0);
         const totalDrillRev = selectedSalesProductDrilldown.reduce((sum, r) => sum + r.total, 0);
-        const reportTitle = language === 'bn' 
+        const reportTitle = language === 'bn'
           ? `আইটেম বিক্রয় ড্রিলডাউন - ${selectedSalesProduct.name}`
           : `ITEM SALES REPORT - ${selectedSalesProduct.name.toUpperCase()}`;
         openPrintModal({
           type: 'REPORT',
           title: reportTitle,
+          autoDownloadPdf,
           data: {
             reportTitle: reportTitle,
             period: dateRangeText,
@@ -981,6 +1390,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         openPrintModal({
           type: 'REPORT',
           title: reportTitle,
+          autoDownloadPdf,
           data: {
             reportTitle: reportTitle,
             period: dateRangeText,
@@ -996,7 +1406,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             ],
             kpis: [
               { label: language === 'bn' ? 'তালিকাভুক্ত আইটেম' : 'Items Listed', value: itemWiseSalesData.length },
-              { label: language === 'bn' ? 'মোট বিক্রিত ইউনিট' : 'Total Units Sold', value: totalSalesUnitsOverall },
+              { label: language === 'bn' ? 'মোট বিক্রিত ইউনিট' : 'Total Units Sold', value: formatCleanNumber(totalSalesUnitsOverall) },
               { label: language === 'bn' ? 'মোট বিক্রয় রাজস্ব' : 'Total Sales Revenue', value: totalSalesRevenueOverall },
             ],
             columns: [
@@ -1023,13 +1433,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       }
     } else if (reportType === 'item-purchase') {
       const isSingle = selectedPurchaseProduct !== null;
+      const effStart = purchaseStartDate || globalStartDate;
+      const effEnd = purchaseEndDate || globalEndDate;
       const dateRangeText =
-        purchaseStartDate && purchaseEndDate
-          ? `${purchaseStartDate} to ${purchaseEndDate}`
-          : purchaseStartDate
-          ? `From ${purchaseStartDate}`
-          : purchaseEndDate
-          ? `Until ${purchaseEndDate}`
+        effStart && effEnd
+          ? `${effStart} to ${effEnd}`
+          : effStart
+          ? `From ${effStart}`
+          : effEnd
+          ? `Until ${effEnd}`
           : (language === 'bn' ? 'সকল সময়' : 'All Time');
 
       if (isSingle && selectedPurchaseProduct) {
@@ -1041,6 +1453,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         openPrintModal({
           type: 'REPORT',
           title: reportTitle,
+          autoDownloadPdf,
           data: {
             reportTitle: reportTitle,
             period: dateRangeText,
@@ -1072,6 +1485,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         openPrintModal({
           type: 'REPORT',
           title: reportTitle,
+          autoDownloadPdf,
           data: {
             reportTitle: reportTitle,
             period: dateRangeText,
@@ -1087,7 +1501,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             ],
             kpis: [
               { label: language === 'bn' ? 'তালিকাভুক্ত আইটেম' : 'Items Listed', value: itemWisePurchasesData.length },
-              { label: language === 'bn' ? 'মোট ক্রয় ইউনিট' : 'Total Units Purchased', value: totalPurchaseUnitsOverall },
+              { label: language === 'bn' ? 'মোট ক্রয় ইউনিট' : 'Total Units Purchased', value: formatCleanNumber(totalPurchaseUnitsOverall) },
               { label: language === 'bn' ? 'মোট ক্রয় খরচ' : 'Total Spend Amount', value: totalPurchaseSpendOverall },
             ],
             columns: [
@@ -1114,13 +1528,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       }
     } else if (reportType === 'pnl') {
       const isSingle = selectedPnlProduct !== null;
+      const effStart = pnlStartDate || globalStartDate;
+      const effEnd = pnlEndDate || globalEndDate;
       const dateRangeText =
-        pnlStartDate && pnlEndDate
-          ? `${pnlStartDate} to ${pnlEndDate}`
-          : pnlStartDate
-          ? `From ${pnlStartDate}`
-          : pnlEndDate
-          ? `Until ${pnlEndDate}`
+        effStart && effEnd
+          ? `${effStart} to ${effEnd}`
+          : effStart
+          ? `From ${effStart}`
+          : effEnd
+          ? `Until ${effEnd}`
           : (language === 'bn' ? 'সকল সময়' : 'All Time');
 
       if (isSingle && selectedPnlProduct) {
@@ -1134,6 +1550,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         openPrintModal({
           type: 'REPORT',
           title: reportTitle,
+          autoDownloadPdf,
           data: {
             reportTitle: reportTitle,
             period: dateRangeText,
@@ -1165,6 +1582,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         openPrintModal({
           type: 'REPORT',
           title: reportTitle,
+          autoDownloadPdf,
           data: {
             reportTitle: reportTitle,
             period: dateRangeText,
@@ -1204,51 +1622,100 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
               profit: i.profit,
               margin: `${i.margin}%`,
             })),
-            totals: { revenue: totalPnlRevenueOverall, cogs: totalPnlCogsOverall, profit: totalPnlProfitOverall },
+            totals: { soldQty: totalPnlSoldQtyOverall, revenue: totalPnlRevenueOverall, cogs: totalPnlCogsOverall, profit: totalPnlProfitOverall },
           },
         });
       }
     } else if (reportType === 'party-ledger') {
-      if (!selectedPartyObj) return;
-      const reportTitle = language === 'bn'
-        ? `পার্টি লেজার ও লেনদেন বিবরণী - ${selectedPartyObj.name}`
-        : `PARTY STATEMENT & TRANSACTION LEDGER - ${selectedPartyObj.name.toUpperCase()}`;
-      openPrintModal({
-        type: 'REPORT',
-        title: reportTitle,
-        data: {
-          reportTitle: reportTitle,
-          period: language === 'bn' ? 'সম্পূর্ণ লেনদেন হিস্ট্রি' : 'Full Transaction History',
-          filters: [
-            { label: language === 'bn' ? 'পার্টির নাম' : 'Party Name', value: selectedPartyObj.name },
-            { label: language === 'bn' ? 'পার্টির ধরন' : 'Type', value: selectedPartyObj.type },
-            { label: language === 'bn' ? 'মোবাইল' : 'Phone', value: selectedPartyObj.phone || '-' },
-            { label: language === 'bn' ? 'ঠিকানা' : 'Address', value: selectedPartyObj.address || '-' },
-          ],
-          kpis: [
-            { label: language === 'bn' ? 'প্রারম্ভিক ব্যালেন্স' : 'Opening Balance', value: selectedPartyObj.openingBalance || 0 },
-            { label: language === 'bn' ? 'বর্তমান ব্যালেন্স / বকেয়া' : 'Current Balance / Due', value: selectedPartyObj.currentBalance || 0 },
-          ],
-          columns: [
-            { header: language === 'bn' ? 'তারিখ' : 'Date', key: 'date' },
-            { header: language === 'bn' ? 'ধরন' : 'Type', key: 'type', align: 'center' },
-            { header: language === 'bn' ? 'ভাউচার / রেফারেন্স #' : 'Voucher / Ref #', key: 'refNo' },
-            { header: language === 'bn' ? 'বিবরণ / মন্তব্য' : 'Particulars / Remarks', key: 'remarks' },
-            { header: language === 'bn' ? 'জমা / ইনফ্লো (৳)' : 'Inflow / Cr (৳)', key: 'credit', align: 'right', format: 'currency' },
-            { header: language === 'bn' ? 'খরচ / আউটফ্লো (৳)' : 'Outflow / Dr (৳)', key: 'debit', align: 'right', format: 'currency' },
-            { header: language === 'bn' ? 'হিসাব / ওয়ালেট' : 'Account / Wallet', key: 'wallet' },
-          ],
-          rows: partyTransactions.map(t => ({
-            date: t.date,
-            type: t.type,
-            refNo: t.referenceNo || t.id,
-            remarks: t.remarks || '-',
-            credit: t.flow === 'IN' ? t.amount : 0,
-            debit: t.flow === 'OUT' ? t.amount : 0,
-            wallet: t.walletName || '-',
-          })),
-        },
-      });
+      if (!selectedPartyObj) {
+        showToast(
+          language === 'bn' ? 'অনুগ্রহ করে প্রথমে একজন কাস্টমার বা সাপ্লায়ার নির্বাচন করুন।' : 'Please select a customer or supplier first.',
+          'warning'
+        );
+        return;
+      }
+      if (partyLedgerViewMode === 'ITEMS') {
+        const totalItemQty = partyItemSummary.reduce((s, r) => s + r.totalQty, 0);
+        const totalItemAmt = partyItemSummary.reduce((s, r) => s + r.totalAmount, 0);
+        const reportTitle = language === 'bn'
+          ? `পার্টি ভিত্তিক পণ্যের তালিকা - ${selectedPartyObj.name}`
+          : `PARTY ITEM BREAKDOWN - ${selectedPartyObj.name.toUpperCase()}`;
+        openPrintModal({
+          type: 'REPORT',
+          title: reportTitle,
+          autoDownloadPdf,
+          data: {
+            reportTitle,
+            period: globalDateRangeText,
+            filters: [
+              { label: language === 'bn' ? 'পার্টির নাম' : 'Party Name', value: selectedPartyObj.name },
+              { label: language === 'bn' ? 'ধরন' : 'Type', value: selectedPartyObj.type },
+              { label: language === 'bn' ? 'মোবাইল' : 'Phone', value: selectedPartyObj.phone || '-' },
+            ],
+            kpis: [
+              { label: language === 'bn' ? 'মোট পণ্য' : 'Total Items', value: partyItemSummary.length },
+              { label: language === 'bn' ? 'মোট পরিমাণ' : 'Total Qty', value: formatCleanNumber(totalItemQty) },
+              { label: language === 'bn' ? 'মোট মূল্য' : 'Total Amount', value: totalItemAmt },
+            ],
+            columns: [
+              { header: language === 'bn' ? 'পণ্যের নাম' : 'Product Name', key: 'productName' },
+              { header: language === 'bn' ? 'ক্যাটাগরি' : 'Category', key: 'categoryName' },
+              { header: language === 'bn' ? 'চালান সংখ্যা' : 'Bills/Invoices', key: 'docCount', align: 'center', format: 'number' },
+              { header: language === 'bn' ? 'মোট পরিমাণ' : 'Total Qty', key: 'totalQty', align: 'center', format: 'number' },
+              { header: language === 'bn' ? 'গড় দর (৳)' : 'Avg Rate', key: 'avgRate', align: 'right', format: 'currency' },
+              { header: language === 'bn' ? 'মোট টাকা (৳)' : 'Total Amount', key: 'totalAmount', align: 'right', format: 'currency' },
+            ],
+            rows: partyItemSummary,
+            totals: { totalQty: totalItemQty, totalAmount: totalItemAmt },
+          },
+        });
+      } else {
+        const totalCr = partyTransactions.reduce((s, tx) => s + tx.credit, 0);
+        const totalDr = partyTransactions.reduce((s, tx) => s + tx.debit, 0);
+        const reportTitle = language === 'bn'
+          ? `পার্টি লেজার ও লেনদেন বিবরণী - ${selectedPartyObj.name}`
+          : `PARTY STATEMENT & TRANSACTION LEDGER - ${selectedPartyObj.name.toUpperCase()}`;
+        openPrintModal({
+          type: 'REPORT',
+          title: reportTitle,
+          autoDownloadPdf,
+          data: {
+            reportTitle: reportTitle,
+            period: globalDateRangeText,
+            filters: [
+              { label: language === 'bn' ? 'পার্টির নাম' : 'Party Name', value: selectedPartyObj.name },
+              { label: language === 'bn' ? 'পার্টির ধরন' : 'Type', value: selectedPartyObj.type },
+              { label: language === 'bn' ? 'মোবাইল' : 'Phone', value: selectedPartyObj.phone || '-' },
+              { label: language === 'bn' ? 'ঠিকানা' : 'Address', value: selectedPartyObj.address || '-' },
+            ],
+            kpis: [
+              { label: language === 'bn' ? 'প্রারম্ভিক ব্যালেন্স' : 'Opening Balance', value: selectedPartyObj.openingBalance || 0 },
+              { label: language === 'bn' ? 'মোট জমা (Credit)' : 'Total Credit', value: totalCr },
+              { label: language === 'bn' ? 'মোট ডেবিট (Debit)' : 'Total Debit', value: totalDr },
+              { label: language === 'bn' ? 'বর্তমান ব্যালেন্স / বকেয়া' : 'Current Balance / Due', value: selectedPartyObj.currentBalance || 0 },
+            ],
+            columns: [
+              { header: language === 'bn' ? 'তারিখ' : 'Date', key: 'date' },
+              { header: language === 'bn' ? 'ধরন' : 'Type', key: 'type', align: 'center' },
+              { header: language === 'bn' ? 'ভাউচার / রেফারেন্স #' : 'Voucher / Ref #', key: 'refNo' },
+              { header: language === 'bn' ? 'বিবরণ / মন্তব্য' : 'Particulars / Remarks', key: 'remarks' },
+              { header: language === 'bn' ? 'জমা / ইনফ্লো (৳)' : 'Credit / In (৳)', key: 'credit', align: 'right', format: 'currency' },
+              { header: language === 'bn' ? 'ডেবিট / আউটফ্লো (৳)' : 'Debit / Out (৳)', key: 'debit', align: 'right', format: 'currency' },
+              { header: language === 'bn' ? 'হিসাব / ওয়ালেট' : 'Account / Wallet', key: 'wallet' },
+            ],
+            rows: partyTransactions.map(tx => ({
+              date: tx.date,
+              type: tx.type.replace(/_/g, ' '),
+              refNo: tx.voucherNo || '-',
+              remarks: tx.remarks || '-',
+              credit: tx.credit,
+              debit: tx.debit,
+              wallet: tx.walletName || '-',
+            })),
+            totals: { credit: totalCr, debit: totalDr },
+          },
+        });
+      }
     }
   };
 
@@ -1263,16 +1730,29 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       return;
     }
 
+    if (reportType === 'batch-report') {
+      batchReportRef.current?.exportCsv();
+      return;
+    }
+
+    if (reportType === 'low-stock') {
+      handleExportLowStockCSV();
+      return;
+    }
+
     if (reportType === 'summary') {
       handleExportCSV('Stock_Summary',
-        ['Product Name', ...(isPharmacyMode ? ['Generic'] : []), 'Brand / Manufacturer', 'Category', 'Barcode', 'In Stock', 'Purchase Price', 'Sales Price', 'Total Cost Value', 'Total Retail Value'],
-        products.map(p => [p.name, ...(isPharmacyMode ? [p.generic || '-'] : []), p.manufacturer || '-', p.categoryName, p.barcode || '-', formatStockWithUnit(p.stock, p), p.purchasePrice, p.salesPrice, p.stock * p.purchasePrice, p.stock * p.salesPrice])
+        ['Product Name', ...(isPharmacyMode ? ['Generic'] : []), 'Brand / Manufacturer', 'Category', 'Batch No', 'Barcode', 'In Stock', 'Purchase Price', 'Sales Price', 'Total Cost Value', 'Total Retail Value'],
+        filteredStockSummaryProducts.map(p => [p.name, ...(isPharmacyMode ? [p.generic || '-'] : []), p.manufacturer || '-', p.categoryName, getProductBatchSummary(p), p.barcode || '-', formatStockWithUnit(p.stock, p), p.purchasePrice, p.salesPrice, p.stock * p.purchasePrice, p.stock * p.salesPrice])
       );
     } else if (reportType === 'ledger') {
-      if (!selectedProdObj) return;
+      if (!selectedProdObj) {
+        showToast(language === 'bn' ? 'প্রথমে একটি পণ্য নির্বাচন করুন।' : 'Please select a product first.', 'warning');
+        return;
+      }
       handleExportCSV(`Item_Ledger_${selectedProdObj.name.replace(/\s+/g, '_')}`,
-        ['Date', 'Type', 'Voucher / Ref', 'Description', 'In Qty', 'Out Qty', 'Rate', 'Total Amount'],
-        prodLedgerEntries.map(e => [e.date, e.type, e.ref, e.description, e.inQty, e.outQty, e.rate, e.total])
+        ['Date', 'Type', 'Voucher / Ref', 'Description', 'In Qty', 'Out Qty', 'Running Movement', 'Rate', 'Total Amount'],
+        prodLedgerEntries.map(e => [e.date, e.type, e.ref, e.description, e.inQty, e.outQty, e.runningBalance, e.rate, e.total])
       );
     } else if (reportType === 'item-sales') {
       const isSingle = selectedSalesProduct !== null;
@@ -1314,11 +1794,24 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
         );
       }
     } else if (reportType === 'party-ledger') {
-      if (!selectedPartyObj) return;
-      handleExportCSV(`Party_Ledger_${selectedPartyObj.name.replace(/\s+/g, '_')}`,
-        ['Date', 'Type', 'Voucher / Ref #', 'Remarks', 'Inflow / Cr', 'Outflow / Dr', 'Wallet'],
-        partyTransactions.map(t => [t.date, t.type, t.referenceNo || t.id, t.remarks || '-', t.flow === 'IN' ? t.amount : 0, t.flow === 'OUT' ? t.amount : 0, t.walletName || '-'])
-      );
+      if (!selectedPartyObj) {
+        showToast(
+          language === 'bn' ? 'অনুগ্রহ করে প্রথমে একজন কাস্টমার বা সাপ্লায়ার নির্বাচন করুন।' : 'Please select a customer or supplier first.',
+          'warning'
+        );
+        return;
+      }
+      if (partyLedgerViewMode === 'ITEMS') {
+        handleExportCSV(`Party_Items_${selectedPartyObj.name.replace(/\s+/g, '_')}`,
+          ['Product Name', 'Category', 'Bills/Invoices', 'Total Qty', 'Unit', 'Avg Rate', 'Total Amount', 'Last Date'],
+          partyItemSummary.map(r => [r.productName, r.categoryName, r.docCount, r.totalQty, r.unit, r.avgRate.toFixed(2), r.totalAmount.toFixed(2), r.lastDate])
+        );
+      } else {
+        handleExportCSV(`Party_Ledger_${selectedPartyObj.name.replace(/\s+/g, '_')}`,
+          ['Date', 'Type', 'Voucher / Ref #', 'Remarks', 'Credit / In', 'Debit / Out', 'Running Balance', 'Wallet'],
+          partyTransactions.map(tx => [tx.date, tx.type, tx.voucherNo || '-', tx.remarks || '-', tx.credit, tx.debit, tx.runningBalance ?? 0, tx.walletName || '-'])
+        );
+      }
     }
   };
 
@@ -1413,7 +1906,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       />
 
       {/* Navigation Sub-Tabs */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1.5 p-1.5 bg-slate-100 dark:bg-slate-900/80 rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1.5 p-1.5 bg-slate-100 dark:bg-slate-900/80 rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
         <button
           type="button"
           onClick={() => setReportType('summary')}
@@ -1533,157 +2026,232 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       {isPharmacyMode && reportType === 'generic-report' && <GenericReportView />}
 
       {/* BATCH & EXPIRY REPORT */}
-      {reportType === 'batch-report' && <BatchReportView />}
+      {reportType === 'batch-report' && (
+        <BatchReportView
+          ref={batchReportRef}
+          globalStartDate={globalStartDate}
+          globalEndDate={globalEndDate}
+        />
+      )}
 
       {/* LOW STOCK REPORT VIEW */}
-      {reportType === 'low-stock' && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="p-4 bg-amber-50 dark:bg-amber-950/40 rounded-xl border border-amber-200 dark:border-amber-900/60">
-              <span className="text-[11px] font-bold text-amber-700 dark:text-amber-300 uppercase">
-                {language === 'bn' ? 'কম স্টক আইটেম' : 'Low Stock Items'}
-              </span>
-              <div className="text-2xl font-bold font-mono text-amber-900 dark:text-amber-100 mt-1">
-                {lowStockReportItems.length} {language === 'bn' ? 'টি পণ্য' : 'Items'}
-              </div>
-            </div>
-            <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800">
-              <span className="text-[11px] font-bold text-slate-400 uppercase">
-                {language === 'bn' ? 'মোট ঘাটতি পরিমাণ' : 'Total Deficit Units'}
-              </span>
-              <div className="text-2xl font-bold font-mono text-rose-600 mt-1">
-                {lowStockReportItems.reduce((sum, p) => sum + Math.max(0, Number(p.reorderLevel || 0) - Number(p.stock || 0)), 0)} Units
-              </div>
-            </div>
-            <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between">
-              <div>
-                <span className="text-[11px] font-bold text-slate-400 uppercase">
-                  {language === 'bn' ? 'পুনরায় পূরণের আনুমানিক খরচ' : 'Restock Cost Value'}
+      {reportType === 'low-stock' && (() => {
+        const totalDeficitUnits = lowStockReportItems.reduce((sum, p) => {
+          const minLevel = p.reorderLevel !== undefined && Number(p.reorderLevel) > 0 ? Number(p.reorderLevel) : 5;
+          return sum + Math.max(0, minLevel - Number(p.stock || 0));
+        }, 0);
+        const totalRestockCost = lowStockReportItems.reduce((sum, p) => {
+          const minLevel = p.reorderLevel !== undefined && Number(p.reorderLevel) > 0 ? Number(p.reorderLevel) : 5;
+          return sum + Math.max(0, minLevel - Number(p.stock || 0)) * Number(p.purchasePrice || 0);
+        }, 0);
+
+        return (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="p-4 bg-amber-50 dark:bg-amber-950/40 rounded-xl border border-amber-200 dark:border-amber-900/60">
+                <span className="text-[11px] font-bold text-amber-700 dark:text-amber-300 uppercase">
+                  {language === 'bn' ? 'কম স্টক আইটেম' : 'Low Stock Items'}
                 </span>
-                <div className="text-2xl font-bold font-mono text-blue-600 dark:text-blue-400 mt-1">
-                  {formatCurrency(lowStockReportItems.reduce((sum, p) => sum + (Math.max(0, Number(p.reorderLevel || 0) - Number(p.stock || 0)) * Number(p.purchasePrice || 0)), 0))}
+                <div className="text-2xl font-bold font-mono text-amber-900 dark:text-amber-100 mt-1">
+                  {lowStockReportItems.length} {language === 'bn' ? 'টি পণ্য' : 'Items'}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={handleExportLowStockCSV}
-                className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
-              >
-                <FileSpreadsheet className="w-4 h-4" />
-                <span>{language === 'bn' ? 'CSV এক্সপোর্ট' : 'Export CSV'}</span>
-              </button>
+              <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800">
+                <span className="text-[11px] font-bold text-slate-400 uppercase">
+                  {language === 'bn' ? 'মোট ঘাটতি পরিমাণ' : 'Total Deficit Units'}
+                </span>
+                <div className="text-2xl font-bold font-mono text-rose-600 mt-1">
+                  {formatCleanNumber(totalDeficitUnits)} Units
+                </div>
+              </div>
+              <div className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+                <div>
+                  <span className="text-[11px] font-bold text-slate-400 uppercase">
+                    {language === 'bn' ? 'পুনরায় পূরণের আনুমানিক খরচ' : 'Restock Cost Value'}
+                  </span>
+                  <div className="text-2xl font-bold font-mono text-blue-600 dark:text-blue-400 mt-1">
+                    {formatCurrency(totalRestockCost)}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleExportLowStockCSV}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer shrink-0"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>{language === 'bn' ? 'CSV এক্সপোর্ট' : 'Export CSV'}</span>
+                </button>
+              </div>
             </div>
-          </div>
 
-          {/* Filter Bar */}
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                {language === 'bn' ? 'ক্যাটাগরি ফিল্টার' : 'Category Filter'}
-              </label>
-              <select
-                value={lowStockCategoryId}
-                onChange={e => setLowStockCategoryId(e.target.value)}
-                className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium"
-              >
-                <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
-                {categories.map(c => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+            {/* Filter Bar */}
+            <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    {language === 'bn' ? 'ক্যাটাগরি ফিল্টার' : 'Category Filter'}
+                  </label>
+                  <select
+                    value={lowStockCategoryId}
+                    onChange={e => setLowStockCategoryId(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium"
+                  >
+                    <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
+                    {categories.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    {language === 'bn' ? 'সাপ্লায়ার / প্রস্তুতকারক' : 'Supplier / Manufacturer'}
+                  </label>
+                  <select
+                    value={lowStockSupplierId}
+                    onChange={e => setLowStockSupplierId(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium"
+                  >
+                    <option value="ALL">{language === 'bn' ? 'সকল সাপ্লায়ার' : 'All Suppliers'}</option>
+                    {availableSuppliers.map(sup => (
+                      <option key={sup} value={sup}>
+                        {sup}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    {language === 'bn' ? 'অনুসন্ধান (Search)' : 'Search Product'}
+                  </label>
+                  <div className="relative">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-2.5 top-2" />
+                    <input
+                      type="text"
+                      placeholder={language === 'bn' ? 'নাম, SKU বা ব্যাচ লিখে খুঁজুন...' : 'Search name, SKU, batch...'}
+                      value={lowStockSearch}
+                      onChange={e => setLowStockSearch(e.target.value)}
+                      className="w-full pl-8 pr-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLowStockCategoryId('ALL');
+                      setLowStockSupplierId('ALL');
+                      setLowStockSearch('');
+                    }}
+                    className="w-full sm:w-auto px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>{language === 'bn' ? 'ফিল্টার রিসেট' : 'Reset Filters'}</span>
+                  </button>
+                </div>
+              </div>
             </div>
-            <div>
-              <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                {language === 'bn' ? 'সাপ্লায়ার / প্রস্তুতকারক' : 'Supplier / Manufacturer'}
-              </label>
-              <select
-                value={lowStockSupplierId}
-                onChange={e => setLowStockSupplierId(e.target.value)}
-                className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium"
-              >
-                <option value="ALL">{language === 'bn' ? 'সকল সাপ্লায়ার' : 'All Suppliers'}</option>
-                {availableSuppliers.map(sup => (
-                  <option key={sup} value={sup}>
-                    {sup}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                {language === 'bn' ? 'অনুসন্ধান (Search)' : 'Search Product'}
-              </label>
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-2.5 top-2" />
-                <input
-                  type="text"
-                  placeholder={language === 'bn' ? 'নাম, SKU বা কোড লিখে খুঁজুন...' : 'Search name, SKU...'}
-                  value={lowStockSearch}
-                  onChange={e => setLowStockSearch(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
-                />
+
+            {/* Table */}
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-slate-850 text-slate-500 font-bold uppercase tracking-wider text-[10px] border-b border-slate-200 dark:border-slate-800">
+                      <th className="py-3 px-4">{language === 'bn' ? 'পণ্যের নাম ও SKU' : 'Product & SKU'}</th>
+                      <th className="py-3 px-4">{language === 'bn' ? 'ব্যাচ নং' : 'Batch No'}</th>
+                      <th className="py-3 px-4">{language === 'bn' ? 'ক্যাটাগরি' : 'Category'}</th>
+                      <th className="py-3 px-4">{language === 'bn' ? 'সাপ্লায়ার / প্রস্তুতকারক' : 'Supplier'}</th>
+                      <th className="py-3 px-4 text-center">{language === 'bn' ? 'বর্তমান স্টক' : 'Current Stock'}</th>
+                      <th className="py-3 px-4 text-center">{language === 'bn' ? 'ন্যূনতম লেভেল' : 'Min Level'}</th>
+                      <th className="py-3 px-4 text-center">{language === 'bn' ? 'ঘাটতি' : 'Deficit'}</th>
+                      <th className="py-3 px-4 text-right">{language === 'bn' ? 'ক্রয় মূল্য' : 'Purchase Price'}</th>
+                      <th className="py-3 px-4 text-right">{language === 'bn' ? 'রিস্টক খরচ' : 'Restock Cost'}</th>
+                      <th className="py-3 px-4 text-center">{language === 'bn' ? 'অ্যাকশন' : 'Action'}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {lowStockReportItems.length === 0 ? (
+                      <tr>
+                        <td colSpan={10} className="py-12 text-center text-slate-400 font-medium">
+                          {language === 'bn' ? 'কোনো কম স্টক পণ্য পাওয়া যায়নি।' : 'No low stock items found matching filters.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      lowStockReportItems.map(p => {
+                        const stock = Number(p.stock || 0);
+                        const minLevel = p.reorderLevel !== undefined && Number(p.reorderLevel) > 0 ? Number(p.reorderLevel) : 5;
+                        const deficit = Math.max(0, minLevel - stock);
+                        const restockCost = deficit * Number(p.purchasePrice || 0);
+                        const catName = categories.find(c => c.id === p.categoryId)?.name || p.categoryName || 'General';
+                        const supplierName = p.manufacturer || p.batches?.[0]?.supplierName || 'General Supplier';
+                        return (
+                          <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                            <td className="py-3 px-4 font-bold text-slate-900 dark:text-white">
+                              <div>{p.name}</div>
+                              {p.sku && <div className="text-[10px] text-slate-400 font-mono">SKU: {p.sku}</div>}
+                            </td>
+                            <td className="py-3 px-4 font-mono text-[11px] text-slate-500">
+                              {getProductBatchSummary(p)}
+                            </td>
+                            <td className="py-3 px-4 text-slate-600 dark:text-slate-400">{catName}</td>
+                            <td className="py-3 px-4 text-slate-600 dark:text-slate-400">{supplierName}</td>
+                            <td className="py-3 px-4 text-center font-mono font-bold text-rose-600 dark:text-rose-400">
+                              {formatStockWithUnit(stock, p)}
+                            </td>
+                            <td className="py-3 px-4 text-center font-mono text-slate-500">
+                              ≤ {formatCleanNumber(minLevel)} {p.unit || 'Pcs'}
+                            </td>
+                            <td className="py-3 px-4 text-center font-mono font-bold text-amber-600 dark:text-amber-400">
+                              {formatCleanNumber(deficit)} {p.unit || 'Pcs'}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono font-medium text-slate-700 dark:text-slate-300">
+                              {formatCurrency(p.purchasePrice)}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono font-bold text-blue-600 dark:text-blue-400">
+                              {formatCurrency(restockCost)}
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedProductId(p.id);
+                                  setReportType('ledger');
+                                }}
+                                className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900/60 text-blue-600 dark:text-blue-400 rounded font-semibold text-[11px] transition-colors cursor-pointer"
+                              >
+                                {language === 'bn' ? 'লেজার' : 'Ledger'}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                  {lowStockReportItems.length > 0 && (
+                    <tfoot className="bg-slate-50 dark:bg-slate-850 font-bold border-t border-slate-200 dark:border-slate-700">
+                      <tr>
+                        <td colSpan={6} className="py-2.5 px-4 text-right text-slate-600 dark:text-slate-400 uppercase">
+                          {language === 'bn' ? 'মোট ঘাটতি ও রিস্টক খরচ:' : 'Total Deficit & Restock Cost:'}
+                        </td>
+                        <td className="py-2.5 px-4 text-center font-mono text-amber-600">
+                          {formatCleanNumber(totalDeficitUnits)} Units
+                        </td>
+                        <td></td>
+                        <td className="py-2.5 px-4 text-right font-mono text-blue-600 text-sm">
+                          {formatCurrency(totalRestockCost)}
+                        </td>
+                        <td></td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
               </div>
             </div>
           </div>
-
-          {/* Table */}
-          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="bg-slate-50 dark:bg-slate-850 text-slate-500 font-bold uppercase tracking-wider text-[10px] border-b border-slate-200 dark:border-slate-800">
-                    <th className="py-3 px-4">{language === 'bn' ? 'পণ্যের নাম ও SKU' : 'Product & SKU'}</th>
-                    <th className="py-3 px-4">{language === 'bn' ? 'ক্যাটাগরি' : 'Category'}</th>
-                    <th className="py-3 px-4">{language === 'bn' ? 'সাপ্লায়ার / প্রস্তুতকারক' : 'Supplier'}</th>
-                    <th className="py-3 px-4 text-center">{language === 'bn' ? 'বর্তমান স্টক' : 'Current Stock'}</th>
-                    <th className="py-3 px-4 text-center">{language === 'bn' ? 'ন্যূনতম লেভেল' : 'Min Level'}</th>
-                    <th className="py-3 px-4 text-right">{language === 'bn' ? 'ক্রয় মূল্য' : 'Purchase Price'}</th>
-                    <th className="py-3 px-4 text-right">{language === 'bn' ? 'বিক্রয় মূল্য' : 'Sales Price'}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {lowStockReportItems.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="py-12 text-center text-slate-400 font-medium">
-                        {language === 'bn' ? 'কোনো কম স্টক পণ্য পাওয়া যায়নি।' : 'No low stock items found matching filters.'}
-                      </td>
-                    </tr>
-                  ) : (
-                    lowStockReportItems.map(p => {
-                      const catName = categories.find(c => c.id === p.categoryId)?.name || p.categoryName || 'General';
-                      const supplierName = p.manufacturer || p.batches?.[0]?.supplierName || 'General Supplier';
-                      return (
-                        <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                          <td className="py-3 px-4 font-bold text-slate-900 dark:text-white">
-                            <div>{p.name}</div>
-                            {p.sku && <div className="text-[10px] text-slate-400 font-mono">SKU: {p.sku}</div>}
-                          </td>
-                          <td className="py-3 px-4 text-slate-600 dark:text-slate-400">{catName}</td>
-                          <td className="py-3 px-4 text-slate-600 dark:text-slate-400">{supplierName}</td>
-                          <td className="py-3 px-4 text-center font-mono font-bold text-rose-600 dark:text-rose-400">
-                            {formatStockWithUnit(Number(p.stock || 0), p)}
-                          </td>
-                          <td className="py-3 px-4 text-center font-mono text-slate-500">
-                            ≤ {Number(p.reorderLevel || 0)} {p.unit || 'Pcs'}
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono font-medium text-slate-700 dark:text-slate-300">
-                            {formatCurrency(p.purchasePrice)}
-                          </td>
-                          <td className="py-3 px-4 text-right font-mono font-medium text-emerald-600">
-                            {formatCurrency(p.salesPrice)}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 1. PRODUCT & STOCK SUMMARY */}
       {reportType === 'summary' && (
@@ -1711,6 +2279,25 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
 
           {/* Controls & Filter Bar */}
           <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                <Filter className="w-3.5 h-3.5 text-blue-600" />
+                <span>{language === 'bn' ? 'স্টক ফিল্টার ও অনুসন্ধান' : 'Filter Stock Summary'}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSummaryCategoryId('ALL');
+                  setSummaryGeneric('ALL');
+                  setSummaryManufacturer('ALL');
+                  setSummarySearch('');
+                }}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>{language === 'bn' ? 'রিসেট' : 'Reset'}</span>
+              </button>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
               <div>
                 <label className="block text-[11px] font-medium text-slate-500 mb-1">
@@ -1721,7 +2308,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                   onChange={e => setSummaryCategoryId(e.target.value)}
                   className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
                 >
-                  <option value="ALL">All Categories</option>
+                  <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
                   {categories.map(c => (
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
@@ -1772,7 +2359,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                     type="text"
                     value={summarySearch}
                     onChange={e => setSummarySearch(e.target.value)}
-                    placeholder="Search name, barcode..."
+                    placeholder={language === 'bn' ? 'নাম, বারকোড, ব্যাচ...' : 'Search name, barcode, batch...'}
                     className="w-full pl-8 pr-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
                   />
                 </div>
@@ -1780,133 +2367,287 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
             </div>
           </div>
 
-          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 font-semibold border-b">
-                <tr>
-                  <th className="py-2.5 px-4">Item Name & SKU</th>
-                  {isPharmacyMode && <th className="py-2.5 px-4">Generic</th>}
-                  <th className="py-2.5 px-4">Brand / Manufacturer</th>
-                  <th className="py-2.5 px-4">Category</th>
-                  <th className="py-2.5 px-4 text-right">Available Stock</th>
-                  <th className="py-2.5 px-4 text-right">Cost Price</th>
-                  <th className="py-2.5 px-4 text-right">Sales Price</th>
-                  <th className="py-2.5 px-4 text-right">Total Asset Value</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {filteredStockSummaryProducts.length === 0 ? (
+          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 font-semibold border-b">
                   <tr>
-                    <td colSpan={isPharmacyMode ? 8 : 7} className="py-8 text-center text-slate-400">
-                      No matching products found.
-                    </td>
+                    <th className="py-2.5 px-4">Item Name & SKU</th>
+                    {isPharmacyMode && <th className="py-2.5 px-4">Generic</th>}
+                    <th className="py-2.5 px-4">Brand / Manufacturer</th>
+                    <th className="py-2.5 px-4">Category</th>
+                    <th className="py-2.5 px-4">Batch No</th>
+                    <th className="py-2.5 px-4 text-right">Available Stock</th>
+                    <th className="py-2.5 px-4 text-right">Cost Price</th>
+                    <th className="py-2.5 px-4 text-right">Sales Price</th>
+                    <th className="py-2.5 px-4 text-right">Total Asset Value</th>
+                    <th className="py-2.5 px-4 text-center">Action</th>
                   </tr>
-                ) : (
-                  filteredStockSummaryProducts.map(p => (
-                    <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                      <td className="py-2.5 px-4 font-bold text-slate-900 dark:text-white">
-                        {p.name}
-                        {p.barcode && <span className="text-[10px] text-slate-400 ml-2 font-mono">({p.barcode})</span>}
-                      </td>
-                      {isPharmacyMode && (
-                        <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{p.generic || '—'}</td>
-                      )}
-                      <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{p.manufacturer || '—'}</td>
-                      <td className="py-2.5 px-4 text-slate-500">{p.categoryName}</td>
-                      <td className="py-2.5 px-4 text-right font-mono font-bold">
-                        <span className={p.stock <= (p.reorderLevel || 5) ? 'text-amber-600' : 'text-slate-700 dark:text-slate-300'}>
-                          {formatStockWithUnit(p.stock, p)}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-4 text-right font-mono">{formatCurrency(p.purchasePrice)}</td>
-                      <td className="py-2.5 px-4 text-right font-mono">{formatCurrency(p.salesPrice)}</td>
-                      <td className="py-2.5 px-4 text-right font-mono font-bold text-blue-600">
-                        {formatCurrency(p.stock * p.purchasePrice)}
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                  {filteredStockSummaryProducts.length === 0 ? (
+                    <tr>
+                      <td colSpan={isPharmacyMode ? 10 : 9} className="py-8 text-center text-slate-400">
+                        {language === 'bn' ? 'কোনো পণ্য পাওয়া যায়নি।' : 'No matching products found.'}
                       </td>
                     </tr>
-                  ))
+                  ) : (
+                    filteredStockSummaryProducts.map(p => (
+                      <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                        <td className="py-2.5 px-4 font-bold text-slate-900 dark:text-white">
+                          {p.name}
+                          {p.barcode && <span className="text-[10px] text-slate-400 ml-2 font-mono">({p.barcode})</span>}
+                        </td>
+                        {isPharmacyMode && (
+                          <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{p.generic || '—'}</td>
+                        )}
+                        <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300 font-medium">{p.manufacturer || '—'}</td>
+                        <td className="py-2.5 px-4 text-slate-500">{p.categoryName}</td>
+                        <td className="py-2.5 px-4 font-mono text-[11px] text-slate-500">{getProductBatchSummary(p)}</td>
+                        <td className="py-2.5 px-4 text-right font-mono font-bold">
+                          <span className={p.stock <= (p.reorderLevel || 5) ? 'text-amber-600' : 'text-slate-700 dark:text-slate-300'}>
+                            {formatStockWithUnit(p.stock, p)}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-4 text-right font-mono">{formatCurrency(p.purchasePrice)}</td>
+                        <td className="py-2.5 px-4 text-right font-mono">{formatCurrency(p.salesPrice)}</td>
+                        <td className="py-2.5 px-4 text-right font-mono font-bold text-blue-600">
+                          {formatCurrency(p.stock * p.purchasePrice)}
+                        </td>
+                        <td className="py-2.5 px-4 text-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedProductId(p.id);
+                              setReportType('ledger');
+                            }}
+                            className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900/60 text-blue-600 dark:text-blue-400 rounded font-semibold text-[11px] transition-colors cursor-pointer"
+                          >
+                            {language === 'bn' ? 'লেজার' : 'Ledger'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+                {filteredStockSummaryProducts.length > 0 && (
+                  <tfoot className="bg-slate-50 dark:bg-slate-850 font-bold border-t border-slate-200 dark:border-slate-700">
+                    <tr>
+                      <td colSpan={isPharmacyMode ? 5 : 4} className="py-2.5 px-4 text-right text-slate-600 dark:text-slate-400 uppercase">
+                        {language === 'bn' ? 'মোট সারাংশ:' : 'Total Summary:'}
+                      </td>
+                      <td className="py-2.5 px-4 text-right font-mono text-slate-900 dark:text-white">
+                        {formatCleanNumber(filteredStockSummaryProducts.reduce((sum, p) => sum + Number(p.stock || 0), 0))} Units
+                      </td>
+                      <td colSpan={2}></td>
+                      <td className="py-2.5 px-4 text-right font-mono text-blue-600 text-sm">
+                        {formatCurrency(filteredStockSummaryProducts.reduce((sum, p) => sum + Number(p.stock || 0) * Number(p.purchasePrice || 0), 0))}
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
                 )}
-              </tbody>
-            </table>
+              </table>
+            </div>
           </div>
         </div>
       )}
 
       {/* 2. ITEM DETAILS & LEDGER */}
-      {reportType === 'ledger' && (
-        <div className="space-y-4">
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <Package className="w-5 h-5 text-blue-600" />
-              <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase">Select Target Product</span>
-                <select
-                  value={selectedProductId}
-                  onChange={e => setSelectedProductId(e.target.value)}
-                  className="block mt-1 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border rounded-lg text-xs font-bold text-slate-900 dark:text-white"
-                >
-                  {products.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} (Stock: {formatStockWithUnit(p.stock, p)})
-                    </option>
-                  ))}
-                </select>
+      {reportType === 'ledger' && (() => {
+        const totalInQty = prodLedgerEntries.reduce((s, e) => s + e.inQty, 0);
+        const totalOutQty = prodLedgerEntries.reduce((s, e) => s + e.outQty, 0);
+        const totalLedgerAmount = prodLedgerEntries.reduce((s, e) => s + e.total, 0);
+        const ledgerDropdownOptions =
+          selectedProdObj && !ledgerFilteredProducts.some(p => p.id === selectedProdObj.id)
+            ? [selectedProdObj, ...ledgerFilteredProducts]
+            : ledgerFilteredProducts;
+
+        return (
+          <div className="space-y-4">
+            <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
+                <div className="sm:col-span-2">
+                  <label className="block text-[11px] font-bold text-blue-600 dark:text-blue-400 mb-1 flex items-center gap-1">
+                    <Package className="w-3.5 h-3.5" />
+                    <span>{language === 'bn' ? 'পণ্য নির্বাচন করুন (Item Ledger)' : 'Select Target Product'}</span>
+                  </label>
+                  <select
+                    value={selectedProdObj?.id || ''}
+                    onChange={e => setSelectedProductId(e.target.value)}
+                    className="w-full px-3 py-1.5 bg-blue-50/50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg text-xs font-bold text-slate-900 dark:text-white"
+                  >
+                    {ledgerDropdownOptions.length === 0 ? (
+                      <option value="">{language === 'bn' ? 'কোনো পণ্য নেই' : 'No products found'}</option>
+                    ) : (
+                      ledgerDropdownOptions.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} {p.barcode ? `[${p.barcode}]` : ''} — Stock: {formatStockWithUnit(p.stock, p)}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    {language === 'bn' ? 'ক্যাটাগরি ফিল্টার' : 'Category Filter'}
+                  </label>
+                  <select
+                    value={ledgerCategoryId}
+                    onChange={e => setLedgerCategoryId(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
+                  >
+                    <option value="ALL">{language === 'bn' ? 'সকল ক্যাটাগরি' : 'All Categories'}</option>
+                    {categories.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    {language === 'bn' ? 'পণ্য খুঁজুন' : 'Search Product'}
+                  </label>
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={ledgerSearch}
+                      onChange={e => setLedgerSearch(e.target.value)}
+                      placeholder={language === 'bn' ? 'নাম, SKU, বারকোড...' : 'Search name, SKU...'}
+                      className="w-full pl-8 pr-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
+
             {selectedProdObj && (
-              <div className="text-right text-xs">
-                <span className="text-slate-400">Current In-Stock: </span>
-                <span className="font-mono font-bold text-blue-600 text-sm">
-                  {formatStockWithUnit(selectedProdObj.stock, selectedProdObj)}
-                </span>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-3.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">
+                    {language === 'bn' ? 'বর্তমান স্টক' : 'Current In-Stock'}
+                  </span>
+                  <div className="text-xl font-bold font-mono text-blue-600 dark:text-blue-400 mt-1">
+                    {formatStockWithUnit(selectedProdObj.stock, selectedProdObj)}
+                  </div>
+                </div>
+                <div className="p-3.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">
+                    {language === 'bn' ? 'মোট স্টক ইন' : 'Total In Qty'}
+                  </span>
+                  <div className="text-xl font-bold font-mono text-sky-600 mt-1">
+                    +{formatCleanNumber(totalInQty)} {selectedProdObj.unit}
+                  </div>
+                </div>
+                <div className="p-3.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">
+                    {language === 'bn' ? 'মোট স্টক আউট' : 'Total Out Qty'}
+                  </span>
+                  <div className="text-xl font-bold font-mono text-emerald-600 mt-1">
+                    -{formatCleanNumber(totalOutQty)} {selectedProdObj.unit}
+                  </div>
+                </div>
+                <div className="p-3.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">
+                    {language === 'bn' ? 'স্টক মূল্য (ক্রয়)' : 'Stock Valuation'}
+                  </span>
+                  <div className="text-xl font-bold font-mono text-slate-900 dark:text-white mt-1">
+                    {formatCurrency(selectedProdObj.stock * selectedProdObj.purchasePrice)}
+                  </div>
+                </div>
               </div>
             )}
-          </div>
 
-          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 font-semibold border-b">
-                <tr>
-                  <th className="py-2.5 px-4">Date</th>
-                  <th className="py-2.5 px-4">Voucher / Ref</th>
-                  <th className="py-2.5 px-4">Description</th>
-                  <th className="py-2.5 px-4 text-right">In Qty</th>
-                  <th className="py-2.5 px-4 text-right">Out Qty</th>
-                  <th className="py-2.5 px-4 text-right">Rate</th>
-                  <th className="py-2.5 px-4 text-right">Total</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {prodLedgerEntries.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="py-8 text-center text-slate-400">
-                      No stock movement ledger records found for this product.
-                    </td>
-                  </tr>
-                ) : (
-                  prodLedgerEntries.map((e, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                      <td className="py-2.5 px-4 text-slate-500">{e.date}</td>
-                      <td className="py-2.5 px-4 font-mono font-bold text-slate-900 dark:text-white">
-                        {e.ref}
-                      </td>
-                      <td className="py-2.5 px-4 text-slate-700 dark:text-slate-300">{e.description}</td>
-                      <td className="py-2.5 px-4 text-right font-mono text-sky-600 font-bold">
-                        {e.inQty > 0 ? `+${e.inQty}` : '-'}
-                      </td>
-                      <td className="py-2.5 px-4 text-right font-mono text-emerald-600 font-bold">
-                        {e.outQty > 0 ? `-${e.outQty}` : '-'}
-                      </td>
-                      <td className="py-2.5 px-4 text-right font-mono">{formatCurrency(e.rate)}</td>
-                      <td className="py-2.5 px-4 text-right font-mono font-bold">{formatCurrency(e.total)}</td>
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 font-semibold border-b">
+                    <tr>
+                      <th className="py-2.5 px-4">Date</th>
+                      <th className="py-2.5 px-4">Type</th>
+                      <th className="py-2.5 px-4">Voucher / Ref</th>
+                      <th className="py-2.5 px-4">Description</th>
+                      <th className="py-2.5 px-4 text-right">In Qty</th>
+                      <th className="py-2.5 px-4 text-right">Out Qty</th>
+                      <th className="py-2.5 px-4 text-right">Net Movement</th>
+                      <th className="py-2.5 px-4 text-right">Rate</th>
+                      <th className="py-2.5 px-4 text-right">Total</th>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {prodLedgerEntries.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="py-8 text-center text-slate-400">
+                          {language === 'bn'
+                            ? 'নির্বাচিত সময়কালে এই পণ্যের কোনো স্টক লেজার রেকর্ড পাওয়া যায়নি।'
+                            : 'No stock movement ledger records found for this product in the selected period.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      prodLedgerEntries.map((e, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                          <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap">{e.date}</td>
+                          <td className="py-2.5 px-4 whitespace-nowrap">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                e.type === 'PURCHASE'
+                                  ? 'bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300'
+                                  : e.type === 'SALE'
+                                  ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                  : e.type === 'SALE_RETURN'
+                                  ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300'
+                                  : 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
+                              }`}
+                            >
+                              {e.type.replace(/_/g, ' ')}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-4 font-mono font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                            {e.ref}
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-700 dark:text-slate-300">{e.description}</td>
+                          <td className="py-2.5 px-4 text-right font-mono text-sky-600 font-bold">
+                            {e.inQty > 0 ? `+${formatCleanNumber(e.inQty)}` : '-'}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono text-emerald-600 font-bold">
+                            {e.outQty > 0 ? `-${formatCleanNumber(e.outQty)}` : '-'}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono font-semibold text-slate-700 dark:text-slate-300">
+                            {formatCleanNumber(e.runningBalance)}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono">{formatCurrency(e.rate)}</td>
+                          <td className="py-2.5 px-4 text-right font-mono font-bold">{formatCurrency(e.total)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                  {prodLedgerEntries.length > 0 && (
+                    <tfoot className="bg-slate-50 dark:bg-slate-850 font-bold border-t border-slate-200 dark:border-slate-700">
+                      <tr>
+                        <td colSpan={4} className="py-2.5 px-4 text-right text-slate-600 dark:text-slate-400 uppercase">
+                          {language === 'bn' ? 'মোট মুভমেন্ট:' : 'Total Movement:'}
+                        </td>
+                        <td className="py-2.5 px-4 text-right font-mono text-sky-600">
+                          +{formatCleanNumber(totalInQty)}
+                        </td>
+                        <td className="py-2.5 px-4 text-right font-mono text-emerald-600">
+                          -{formatCleanNumber(totalOutQty)}
+                        </td>
+                        <td colSpan={2}></td>
+                        <td className="py-2.5 px-4 text-right font-mono text-slate-900 dark:text-white text-sm">
+                          {formatCurrency(totalLedgerAmount)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 3. ITEM WISE SALES REPORT (WITH DEDICATED ITEM SELECTOR & DRILLDOWN) */}
       {reportType === 'item-sales' && (
@@ -1922,23 +2663,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
               </div>
 
               {/* Action Buttons */}
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    const headers = ['Item Name', ...(isPharmacyMode ? ['Generic'] : []), 'Brand / Manufacturer', 'Category', 'Barcode', 'Units Sold', 'Avg Sales Price', 'Total Revenue'];
-                    const rows = itemWiseSalesData.map(item => [
-                      item.product.name,
-                      ...(isPharmacyMode ? [item.product.generic || '—'] : []),
-                      item.product.manufacturer || '—',
-                      item.product.categoryName,
-                      item.product.barcode || '',
-                      item.soldQty,
-                      item.avgPrice.toFixed(2),
-                      item.revenue.toFixed(2),
-                    ]);
-                    handleExportCSV('Item_Sales_Report', headers, rows);
-                  }}
+                  onClick={() => setSalesOnlyActive(prev => !prev)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                    salesOnlyActive
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                  }`}
+                >
+                  {language === 'bn' ? 'শুধু বিক্রিত পণ্য' : 'Only Sold Items'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportCurrentReport}
                   className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
@@ -1952,8 +2691,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                     setSalesGeneric('ALL');
                     setSalesManufacturer('ALL');
                     setSalesSearch('');
-                    setSalesStartDate('');
-                    setSalesEndDate('');
+                    setSalesOnlyActive(false);
+                    handlePeriodChange('', '', '');
                   }}
                   className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
                   title="Reset Filters"
@@ -2298,11 +3037,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                   </tbody>
                   <tfoot className="bg-slate-50 dark:bg-slate-850 font-bold border-t border-slate-200 dark:border-slate-700">
                     <tr>
-                      <td colSpan={3} className="py-2.5 px-4 text-right text-slate-600 dark:text-slate-400 uppercase">
+                      <td colSpan={isPharmacyMode ? 5 : 4} className="py-2.5 px-4 text-right text-slate-600 dark:text-slate-400 uppercase">
                         Total Summary:
                       </td>
                       <td className="py-2.5 px-4 text-right font-mono text-blue-600">
-                        {totalSalesUnitsOverall} Units
+                        {formatCleanNumber(totalSalesUnitsOverall)} Units
                       </td>
                       <td></td>
                       <td className="py-2.5 px-4 text-right font-mono text-emerald-600 text-sm">
@@ -2332,23 +3071,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
               </div>
 
               {/* Action Buttons */}
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    const headers = ['Item Name', ...(isPharmacyMode ? ['Generic'] : []), 'Brand / Manufacturer', 'Category', 'Barcode', 'Units Purchased', 'Unit Cost', 'Total Spend'];
-                    const rows = itemWisePurchasesData.map(item => [
-                      item.product.name,
-                      ...(isPharmacyMode ? [item.product.generic || '—'] : []),
-                      item.product.manufacturer || '—',
-                      item.product.categoryName,
-                      item.product.barcode || '',
-                      item.purchasedQty,
-                      item.avgCost.toFixed(2),
-                      item.cost.toFixed(2),
-                    ]);
-                    handleExportCSV('Item_Purchase_Report', headers, rows);
-                  }}
+                  onClick={() => setPurchaseOnlyActive(prev => !prev)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                    purchaseOnlyActive
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                  }`}
+                >
+                  {language === 'bn' ? 'শুধু ক্রয়কৃত পণ্য' : 'Only Purchased Items'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportCurrentReport}
                   className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
@@ -2362,8 +3099,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                     setPurchaseGeneric('ALL');
                     setPurchaseManufacturer('ALL');
                     setPurchaseSearch('');
-                    setPurchaseStartDate('');
-                    setPurchaseEndDate('');
+                    setPurchaseOnlyActive(false);
+                    handlePeriodChange('', '', '');
                   }}
                   className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
                   title="Reset Filters"
@@ -2708,11 +3445,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                   </tbody>
                   <tfoot className="bg-slate-50 dark:bg-slate-850 font-bold border-t border-slate-200 dark:border-slate-700">
                     <tr>
-                      <td colSpan={5} className="py-2.5 px-4 text-right text-slate-600 dark:text-slate-400 uppercase">
+                      <td colSpan={isPharmacyMode ? 5 : 4} className="py-2.5 px-4 text-right text-slate-600 dark:text-slate-400 uppercase">
                         Total Summary:
                       </td>
                       <td className="py-2.5 px-4 text-right font-mono text-sky-600">
-                        {totalPurchaseUnitsOverall} Units
+                        {formatCleanNumber(totalPurchaseUnitsOverall)} Units
                       </td>
                       <td></td>
                       <td className="py-2.5 px-4 text-right font-mono text-rose-600 text-sm">
@@ -2742,25 +3479,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
               </div>
 
               {/* Action Buttons */}
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    const headers = ['Item Name', ...(isPharmacyMode ? ['Generic'] : []), 'Brand / Manufacturer', 'Category', 'Barcode', 'Sold Qty', 'Revenue', 'COGS', 'Gross Profit', 'Margin %'];
-                    const rows = itemPnlData.map(item => [
-                      item.product.name,
-                      ...(isPharmacyMode ? [item.product.generic || '—'] : []),
-                      item.product.manufacturer || '—',
-                      item.product.categoryName,
-                      item.product.barcode || '',
-                      item.soldQty,
-                      item.revenue.toFixed(2),
-                      item.cogs.toFixed(2),
-                      item.profit.toFixed(2),
-                      `${item.margin}%`,
-                    ]);
-                    handleExportCSV('Item_PnL_Report', headers, rows);
-                  }}
+                  onClick={() => setPnlOnlyActive(prev => !prev)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                    pnlOnlyActive
+                      ? 'bg-emerald-600 text-white border-emerald-600'
+                      : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                  }`}
+                >
+                  {language === 'bn' ? 'শুধু বিক্রিত পণ্য' : 'Only Sold Items'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportCurrentReport}
                   className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
@@ -2774,8 +3507,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                     setPnlGeneric('ALL');
                     setPnlManufacturer('ALL');
                     setPnlSearch('');
-                    setPnlStartDate('');
-                    setPnlEndDate('');
+                    setPnlOnlyActive(false);
+                    handlePeriodChange('', '', '');
                   }}
                   className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer"
                   title="Reset Filters"
@@ -2966,10 +3699,18 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
               <span className="text-[11px] font-bold text-slate-400 uppercase">
                 {selectedPnlProduct ? 'Profit Per Unit' : 'Net Business Profit'}
               </span>
-              <div className="text-2xl font-bold font-mono text-blue-600 dark:text-blue-400 mt-1">
+              <div
+                className={`text-2xl font-bold font-mono mt-1 ${
+                  (selectedPnlProduct
+                    ? selectedPnlProduct.salesPrice - selectedPnlProduct.purchasePrice
+                    : pnlNetBusinessProfit) >= 0
+                    ? 'text-blue-600 dark:text-blue-400'
+                    : 'text-rose-600 dark:text-rose-400'
+                }`}
+              >
                 {selectedPnlProduct
-                  ? formatCurrency(Math.max(0, selectedPnlProduct.salesPrice - selectedPnlProduct.purchasePrice))
-                  : formatCurrency(netProfit)}
+                  ? formatCurrency(selectedPnlProduct.salesPrice - selectedPnlProduct.purchasePrice)
+                  : formatCurrency(pnlNetBusinessProfit)}
               </div>
             </div>
           </div>
@@ -3155,8 +3896,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                   </tbody>
                   <tfoot className="bg-slate-50 dark:bg-slate-850 font-bold border-t border-slate-200 dark:border-slate-700">
                     <tr>
-                      <td colSpan={3} className="py-2.5 px-4 text-right text-slate-600 dark:text-slate-400 uppercase">
+                      <td colSpan={isPharmacyMode ? 4 : 3} className="py-2.5 px-4 text-right text-slate-600 dark:text-slate-400 uppercase">
                         Total Summary:
+                      </td>
+                      <td className="py-2.5 px-4 text-right font-mono text-blue-600">
+                        {formatCleanNumber(totalPnlSoldQtyOverall)} Units
                       </td>
                       <td className="py-2.5 px-4 text-right font-mono text-slate-900 dark:text-white text-sm">
                         {formatCurrency(totalPnlRevenueOverall)}
@@ -3164,10 +3908,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
                       <td className="py-2.5 px-4 text-right font-mono text-rose-600 text-sm">
                         {formatCurrency(totalPnlCogsOverall)}
                       </td>
-                      <td className="py-2.5 px-4 text-right font-mono text-emerald-600 text-sm">
+                      <td className={`py-2.5 px-4 text-right font-mono text-sm ${totalPnlProfitOverall >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                         {formatCurrency(totalPnlProfitOverall)}
                       </td>
-                      <td className="py-2.5 px-4 text-right font-mono text-emerald-600">
+                      <td className={`py-2.5 px-4 text-right font-mono ${Number(totalPnlMarginOverall) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                         {totalPnlMarginOverall}%
                       </td>
                       <td></td>
@@ -3353,95 +4097,295 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       )}
 
       {/* 8. BY PARTY ITEM & TRANSACTION */}
-      {reportType === 'party-ledger' && (
-        <div className="space-y-4">
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <User className="w-5 h-5 text-blue-600" />
-              <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase">Select Customer / Supplier</span>
-                <select
-                  value={selectedPartyId}
-                  onChange={e => setSelectedPartyId(e.target.value)}
-                  className="block mt-1 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border rounded-lg text-xs font-bold text-slate-900 dark:text-white"
-                >
-                  <option value="">{language === 'bn' ? '-- কাস্টমার/সাপ্লায়ার নির্বাচন করুন --' : '-- Select Party --'}</option>
-                  {parties.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.type} - {p.phone})
-                    </option>
-                  ))}
-                </select>
+      {reportType === 'party-ledger' && (() => {
+        const totalPartyCredit = partyTransactions.reduce((s, tx) => s + tx.credit, 0);
+        const totalPartyDebit = partyTransactions.reduce((s, tx) => s + tx.debit, 0);
+        const totalPartyItemQty = partyItemSummary.reduce((s, r) => s + r.totalQty, 0);
+        const totalPartyItemAmt = partyItemSummary.reduce((s, r) => s + r.totalAmount, 0);
+        const partyDropdownOptions =
+          selectedPartyObj && !filteredPartiesList.some(p => p.id === selectedPartyObj.id)
+            ? [selectedPartyObj, ...filteredPartiesList]
+            : filteredPartiesList;
+
+        return (
+          <div className="space-y-4">
+            {/* Party Filter & Selector Bar */}
+            <div className="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    {language === 'bn' ? 'পার্টির ধরন' : 'Party Type'}
+                  </label>
+                  <select
+                    value={partyTypeFilter}
+                    onChange={e => setPartyTypeFilter(e.target.value as 'ALL' | 'CUSTOMER' | 'SUPPLIER')}
+                    className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium"
+                  >
+                    <option value="ALL">{language === 'bn' ? 'সকল পার্টি (কাস্টমার ও সাপ্লায়ার)' : 'All Parties'}</option>
+                    <option value="CUSTOMER">{language === 'bn' ? 'কাস্টমার (Customer)' : 'Customers Only'}</option>
+                    <option value="SUPPLIER">{language === 'bn' ? 'সাপ্লায়ার (Supplier)' : 'Suppliers Only'}</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    {language === 'bn' ? 'পার্টি খুঁজুন' : 'Search Party'}
+                  </label>
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={partySearch}
+                      onChange={e => setPartySearch(e.target.value)}
+                      placeholder={language === 'bn' ? 'নাম বা ফোন নম্বর...' : 'Search name or phone...'}
+                      className="w-full pl-8 pr-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="block text-[11px] font-bold text-blue-600 dark:text-blue-400 mb-1 flex items-center gap-1">
+                    <User className="w-3.5 h-3.5" />
+                    <span>{language === 'bn' ? 'কাস্টমার / সাপ্লায়ার নির্বাচন করুন:' : 'Select Customer / Supplier:'}</span>
+                  </label>
+                  <select
+                    value={selectedPartyId}
+                    onChange={e => setSelectedPartyId(e.target.value)}
+                    className="w-full px-3 py-1.5 bg-blue-50/50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg text-xs font-bold text-slate-900 dark:text-white"
+                  >
+                    <option value="">{language === 'bn' ? '-- কাস্টমার/সাপ্লায়ার নির্বাচন করুন --' : '-- Select Party --'}</option>
+                    {partyDropdownOptions.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({p.type}{p.phone ? ` - ${p.phone}` : ''})
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
             </div>
+
+            {/* Party KPI Summary + Sub-view Switcher */}
             {selectedPartyObj && (
-              <div className="text-right text-xs">
-                <span className="text-slate-400">Current Balance: </span>
-                <span className="font-mono font-bold text-red-600 text-sm">
-                  {formatCurrency(selectedPartyObj.currentBalance)}
-                </span>
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-3.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase">
+                      {language === 'bn' ? 'প্রারম্ভিক ব্যালেন্স' : 'Opening Balance'}
+                    </span>
+                    <div className="text-xl font-bold font-mono text-slate-700 dark:text-slate-200 mt-1">
+                      {formatCurrency(selectedPartyObj.openingBalance || 0)}
+                    </div>
+                  </div>
+                  <div className="p-3.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase">
+                      {language === 'bn' ? 'মোট জমা (Credit)' : 'Total Credit / In'}
+                    </span>
+                    <div className="text-xl font-bold font-mono text-emerald-600 mt-1">
+                      {formatCurrency(totalPartyCredit)}
+                    </div>
+                  </div>
+                  <div className="p-3.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase">
+                      {language === 'bn' ? 'মোট ডেবিট (Debit)' : 'Total Debit / Out'}
+                    </span>
+                    <div className="text-xl font-bold font-mono text-rose-600 mt-1">
+                      {formatCurrency(totalPartyDebit)}
+                    </div>
+                  </div>
+                  <div className="p-3.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase">
+                      {language === 'bn' ? 'বর্তমান বকেয়া / ব্যালেন্স' : 'Current Balance'}
+                    </span>
+                    <div className="text-xl font-bold font-mono text-blue-600 dark:text-blue-400 mt-1">
+                      {formatCurrency(selectedPartyObj.currentBalance || 0)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Sub-View Switcher: Transactions vs Party Items */}
+                <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-900/80 p-1 rounded-xl border border-slate-200 dark:border-slate-800 w-fit">
+                  <button
+                    type="button"
+                    onClick={() => setPartyLedgerViewMode('TRANSACTIONS')}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                      partyLedgerViewMode === 'TRANSACTIONS'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:bg-white/60 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    {language === 'bn'
+                      ? `লেনদেন লেজার (${partyTransactions.length})`
+                      : `Transactions (${partyTransactions.length})`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPartyLedgerViewMode('ITEMS')}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                      partyLedgerViewMode === 'ITEMS'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:bg-white/60 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    {language === 'bn'
+                      ? `পণ্য ভিত্তিক তালিকা (${partyItemSummary.length})`
+                      : `By Party Items (${partyItemSummary.length})`}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Table Area */}
+            {partyLedgerViewMode === 'ITEMS' && selectedPartyObj ? (
+              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 font-semibold border-b">
+                      <tr>
+                        <th className="py-2.5 px-4">{language === 'bn' ? 'পণ্যের নাম' : 'Product Name'}</th>
+                        <th className="py-2.5 px-4">{language === 'bn' ? 'ক্যাটাগরি' : 'Category'}</th>
+                        <th className="py-2.5 px-4 text-center">{language === 'bn' ? 'চালান / বিল সংখ্যা' : 'Bills / Invoices'}</th>
+                        <th className="py-2.5 px-4 text-right">{language === 'bn' ? 'মোট পরিমাণ' : 'Total Qty'}</th>
+                        <th className="py-2.5 px-4 text-right">{language === 'bn' ? 'গড় দর' : 'Avg Rate'}</th>
+                        <th className="py-2.5 px-4 text-right">{language === 'bn' ? 'মোট টাকা' : 'Total Amount'}</th>
+                        <th className="py-2.5 px-4 text-right">{language === 'bn' ? 'সর্বশেষ তারিখ' : 'Last Date'}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {partyItemSummary.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="py-8 text-center text-slate-400">
+                            {language === 'bn'
+                              ? 'নির্বাচিত সময়কালে এই পার্টির কোনো পণ্য লেনদেন পাওয়া যায়নি।'
+                              : 'No item transactions found for this party in the selected period.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        partyItemSummary.map(row => (
+                          <tr key={row.productId} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                            <td className="py-2.5 px-4 font-bold text-slate-900 dark:text-white">{row.productName}</td>
+                            <td className="py-2.5 px-4 text-slate-500">{row.categoryName}</td>
+                            <td className="py-2.5 px-4 text-center font-mono">{row.docCount}</td>
+                            <td className="py-2.5 px-4 text-right font-mono font-bold text-blue-600">
+                              {formatCleanNumber(row.totalQty)} {row.unit}
+                            </td>
+                            <td className="py-2.5 px-4 text-right font-mono">{formatCurrency(row.avgRate)}</td>
+                            <td className="py-2.5 px-4 text-right font-mono font-bold text-emerald-600">
+                              {formatCurrency(row.totalAmount)}
+                            </td>
+                            <td className="py-2.5 px-4 text-right text-slate-500 whitespace-nowrap">{row.lastDate}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                    {partyItemSummary.length > 0 && (
+                      <tfoot className="bg-slate-50 dark:bg-slate-850 font-bold border-t border-slate-200 dark:border-slate-700">
+                        <tr>
+                          <td colSpan={3} className="py-2.5 px-4 text-right text-slate-600 dark:text-slate-400 uppercase">
+                            {language === 'bn' ? 'মোট সারাংশ:' : 'Total Summary:'}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono text-blue-600">
+                            {formatCleanNumber(totalPartyItemQty)} Units
+                          </td>
+                          <td></td>
+                          <td className="py-2.5 px-4 text-right font-mono text-emerald-600 text-sm">
+                            {formatCurrency(totalPartyItemAmt)}
+                          </td>
+                          <td></td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 font-semibold border-b">
+                      <tr>
+                        <th className="py-2.5 px-4">Date</th>
+                        <th className="py-2.5 px-4">Voucher / Ref</th>
+                        <th className="py-2.5 px-4">Transaction Type</th>
+                        <th className="py-2.5 px-4">Account / Wallet</th>
+                        <th className="py-2.5 px-4">Remarks</th>
+                        <th className="py-2.5 px-4 text-right text-emerald-600">Credit / In (৳)</th>
+                        <th className="py-2.5 px-4 text-right text-rose-600">Debit / Out (৳)</th>
+                        <th className="py-2.5 px-4 text-right">Balance</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {partyTransactions.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="py-8 text-center text-slate-400">
+                            {!selectedPartyId ? (
+                              language === 'bn'
+                                ? 'তথ্য দেখতে উপরের তালিকা থেকে একজন কাস্টমার বা সাপ্লায়ার নির্বাচন করুন।'
+                                : 'Please select a customer or supplier to view their ledger.'
+                            ) : (
+                              language === 'bn'
+                                ? 'নির্বাচিত সময়কালে এই পার্টির কোনো লেনদেন পাওয়া যায়নি।'
+                                : 'No transactions recorded for this party in the selected period.'
+                            )}
+                          </td>
+                        </tr>
+                      ) : (
+                        partyTransactions.map((tx, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                            <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap">{tx.date}</td>
+                            <td className="py-2.5 px-4 font-mono font-bold whitespace-nowrap">{tx.voucherNo}</td>
+                            <td className="py-2.5 px-4 whitespace-nowrap">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  tx.type === 'SALE_INVOICE' || tx.type === 'PURCHASE_BILL'
+                                    ? 'bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300'
+                                    : tx.credit > 0
+                                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                    : 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
+                                }`}
+                              >
+                                {tx.type.replace(/_/g, ' ')}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300">{tx.walletName}</td>
+                            <td className="py-2.5 px-4 text-slate-500">{tx.remarks}</td>
+                            <td className="py-2.5 px-4 text-right font-mono font-bold text-emerald-600">
+                              {tx.credit > 0 ? formatCurrency(tx.credit) : '-'}
+                            </td>
+                            <td className="py-2.5 px-4 text-right font-mono font-bold text-rose-600">
+                              {tx.debit > 0 ? formatCurrency(tx.debit) : '-'}
+                            </td>
+                            <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-700 dark:text-slate-200">
+                              {formatCurrency(tx.runningBalance ?? 0)}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                    {partyTransactions.length > 0 && selectedPartyObj && (
+                      <tfoot className="bg-slate-50 dark:bg-slate-850 font-bold border-t border-slate-200 dark:border-slate-700">
+                        <tr>
+                          <td colSpan={5} className="py-2.5 px-4 text-right text-slate-600 dark:text-slate-400 uppercase">
+                            {language === 'bn' ? 'মোট লেনদেন:' : 'Total:'}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono text-emerald-600 text-sm">
+                            {formatCurrency(totalPartyCredit)}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono text-rose-600 text-sm">
+                            {formatCurrency(totalPartyDebit)}
+                          </td>
+                          <td className="py-2.5 px-4 text-right font-mono text-blue-600 text-sm">
+                            {formatCurrency(selectedPartyObj.currentBalance || 0)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
               </div>
             )}
           </div>
-
-          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 font-semibold border-b">
-                <tr>
-                  <th className="py-2.5 px-4">Date</th>
-                  <th className="py-2.5 px-4">Voucher / Ref</th>
-                  <th className="py-2.5 px-4">Transaction Type</th>
-                  <th className="py-2.5 px-4">Account / Wallet</th>
-                  <th className="py-2.5 px-4">Remarks</th>
-                  <th className="py-2.5 px-4 text-right text-emerald-600">Credit / In (৳)</th>
-                  <th className="py-2.5 px-4 text-right text-rose-600">Debit / Out (৳)</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {partyTransactions.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="py-8 text-center text-slate-400">
-                      {!selectedPartyId ? (
-                        language === 'bn' ? 'তথ্য দেখতে উপরের তালিকা থেকে একজন কাস্টমার বা সাপ্লায়ার নির্বাচন করুন।' : 'Please select a customer or supplier to view their ledger.'
-                      ) : (
-                        language === 'bn' ? 'এই পার্টির কোনো লেনদেন পাওয়া যায়নি।' : 'No transactions recorded for this party.'
-                      )}
-                    </td>
-                  </tr>
-                ) : (
-                  partyTransactions.map((tx, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                      <td className="py-2.5 px-4 text-slate-500">{tx.date}</td>
-                      <td className="py-2.5 px-4 font-mono font-bold">{tx.voucherNo}</td>
-                      <td className="py-2.5 px-4">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            tx.type === 'SALE_INVOICE' || tx.type === 'PURCHASE_BILL'
-                              ? 'bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300'
-                              : tx.credit > 0
-                              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
-                              : 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
-                          }`}
-                        >
-                          {tx.type.replace('_', ' ')}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-4 text-slate-600 dark:text-slate-300">{tx.walletName}</td>
-                      <td className="py-2.5 px-4 text-slate-500">{tx.remarks}</td>
-                      <td className="py-2.5 px-4 text-right font-mono font-bold text-emerald-600">
-                        {tx.credit > 0 ? formatCurrency(tx.credit) : '-'}
-                      </td>
-                      <td className="py-2.5 px-4 text-right font-mono font-bold text-rose-600">
-                        {tx.debit > 0 ? formatCurrency(tx.debit) : '-'}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 9. EXPIRY REPORT */}
       {reportType === 'expiry-report' && <ExpiryReportView />}
