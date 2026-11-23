@@ -515,6 +515,18 @@ const LOCAL_STORAGE_KEY = 'DOKANPRO_ERP_DATA_V1';
 // Helper to safely load persisted data from localStorage synchronously on initial state evaluation
 function getPersistedData<T>(fieldKey: string, fallback: T): T {
   try {
+    if (fieldKey === 'products') {
+      try {
+        const prodBackup = localStorage.getItem('DOKANPRO_PRODUCTS_BACKUP');
+        if (prodBackup) {
+          const parsedBackup = JSON.parse(prodBackup);
+          if (Array.isArray(parsedBackup) && parsedBackup.length > 0) {
+            return parsedBackup as unknown as T;
+          }
+        }
+      } catch {}
+    }
+
     // 1. Check dedicated standalone key first (e.g. 'companySettings')
     const standalone = localStorage.getItem(fieldKey);
     if (standalone) {
@@ -635,29 +647,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [products, _setProducts] = useState<Product[]>(() =>
     sanitizeProducts(getPersistedData('products', initialProducts))
   );
+  const productsRef = useRef<Product[]>(products);
+  useEffect(() => {
+    productsRef.current = products;
+  }, [products]);
   const setProducts: React.Dispatch<React.SetStateAction<Product[]>> = useCallback(action => {
-    _setProducts(prev => sanitizeProducts(typeof action === 'function' ? action(prev) : action));
+    _setProducts(prev => {
+      const next = sanitizeProducts(typeof action === 'function' ? action(prev) : action);
+      productsRef.current = next;
+      return next;
+    });
   }, []);
   const [deletedProductIds, setDeletedProductIds] = useState<string[]>(() => {
+    const isLikelyProductId = (v: any) => typeof v === 'string' && v.startsWith('prod-');
     try {
       const raw = localStorage.getItem('DOKANPRO_DELETED_PRODUCT_IDS');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) return parsed.filter(isLikelyProductId);
       }
     } catch {}
     return [];
   });
   const [deletedEntityIds, setDeletedEntityIds] = useState<Record<string, string[]>>(() => {
+    const sanitizeMap = (m: any): Record<string, string[]> => {
+      if (!m || typeof m !== 'object' || Array.isArray(m)) return {};
+      const out: Record<string, string[]> = { ...m };
+      if (Array.isArray(out.products)) {
+        out.products = out.products.filter(v => typeof v === 'string' && v.startsWith('prod-'));
+      }
+      return out;
+    };
     try {
       const raw = localStorage.getItem('DOKANPRO_DELETED_ENTITY_IDS');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return sanitizeMap(parsed);
       }
     } catch {}
     const fromMaster = getPersistedData<Record<string, string[]>>('deletedEntityIds', {});
-    return fromMaster && typeof fromMaster === 'object' && !Array.isArray(fromMaster) ? fromMaster : {};
+    return sanitizeMap(fromMaster);
   });
   const deletedEntityIdsRef = useRef<Record<string, string[]>>(deletedEntityIds);
   useEffect(() => {
@@ -2211,7 +2240,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         theme,
         lastUpdatedEpoch: Date.now(),
       };
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload));
+
+      try {
+        localStorage.setItem('DOKANPRO_PRODUCTS_BACKUP', JSON.stringify(products));
+      } catch {}
+
+      try {
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload));
+      } catch (quotaErr) {
+        // Quota exceeded protection: trim bulky logs and retry saving
+        const trimmedPayload = {
+          ...payload,
+          activityLogs: activityLogs.slice(0, 40),
+          smsLogs: smsLogs.slice(0, 40),
+          deletedSaleInvoices: deletedSaleInvoices.slice(0, 40),
+          deletedPurchaseInvoices: deletedPurchaseInvoices.slice(0, 40),
+        };
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(trimmedPayload));
+      }
+
       localStorage.setItem('companySettings', JSON.stringify(companySettings));
       localStorage.setItem('dokanpro_disease_master', JSON.stringify(diseaseMaster));
       localStorage.setItem('dokanpro_disease_categories', JSON.stringify(diseaseCategories));
@@ -2237,6 +2284,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Failed to save to local storage', e);
       try {
         localStorage.setItem('companySettings', JSON.stringify(companySettings));
+        localStorage.setItem('DOKANPRO_PRODUCTS_BACKUP', JSON.stringify(products));
       } catch {}
     }
   }, [
@@ -2379,6 +2427,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Reload local state from localStorage for multi-tab sync
   const reloadFromLocalStorage = () => {
     try {
+      try {
+        const prodBackup = localStorage.getItem('DOKANPRO_PRODUCTS_BACKUP');
+        if (prodBackup) {
+          const parsedProds = JSON.parse(prodBackup);
+          if (Array.isArray(parsedProds) && parsedProds.length > 0) {
+            setProducts(parsedProds);
+          }
+        }
+      } catch {}
+
       // Check dedicated companySettings first
       try {
         const standaloneSettings = localStorage.getItem('companySettings');
@@ -2393,7 +2451,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const data = JSON.parse(saved);
       if (data) {
         if (data.companySettings && !localStorage.getItem('companySettings')) setCompanySettings(data.companySettings);
-        if (Array.isArray(data.products)) setProducts(data.products);
+        if (Array.isArray(data.products) && data.products.length > 0) setProducts(data.products);
         if (Array.isArray(data.categories)) setCategories(data.categories);
         if (Array.isArray(data.parties)) setParties(data.parties);
         if (Array.isArray(data.wallets)) setWallets(data.wallets);
@@ -2641,7 +2699,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const fullState = {
         companySettings,
-        products,
+        products: productsRef.current,
         deletedProductIds,
         deletedEntityIds: deletedEntityIdsRef.current,
         categories,
@@ -2676,6 +2734,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         diseaseCategories,
         language,
         theme,
+        is_reset_wipe: false,
         lastUpdatedEpoch: pushTimestamp,
       };
 
