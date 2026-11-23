@@ -132,7 +132,7 @@ function renderInvoiceItemName(item: any, isPharmacyMode = false, compactNameOnl
 }
 
 export const PrintInvoiceModal: React.FC = () => {
-  const { printableDoc, closePrintModal, companySettings, language, parties, categories, showToast } = useApp();
+  const { printableDoc, closePrintModal, companySettings, language, parties, categories, products: allStoreProducts, showToast } = useApp();
 
   // Resolve default print format directly from Company Settings
   const resolveDefaultFormat = (): 'A4' | 'POS_80MM' | 'XPRINTER_80MM' => {
@@ -149,10 +149,12 @@ export const PrintInvoiceModal: React.FC = () => {
   const [showTemplateMenu, setShowTemplateMenu] = useState(false);
   const printContentRef = useRef<HTMLDivElement>(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [includeAllProductsInPrint, setIncludeAllProductsInPrint] = useState(false);
 
   // Automatically sync print format whenever printableDoc opens or invoicePrintType changes in settings
   useEffect(() => {
     if (printableDoc) {
+      setIncludeAllProductsInPrint(false);
       if (printableDoc.type === 'POS_80MM') {
         setPrintFormat('POS_80MM');
         setPrintOrientation('PORTRAIT');
@@ -207,6 +209,27 @@ export const PrintInvoiceModal: React.FC = () => {
   if (!printableDoc) return null;
 
   const { type, title, data } = printableDoc;
+
+  // For PRODUCT_LIST: allow switching between filtered list and ALL store products right inside the Print Modal
+  const passedProductList: any[] = Array.isArray(data?.products) ? data.products : [];
+  const hasMoreStoreProducts =
+    type === 'PRODUCT_LIST' &&
+    Array.isArray(allStoreProducts) &&
+    allStoreProducts.length > passedProductList.length;
+  const effectiveProductList: any[] =
+    type === 'PRODUCT_LIST'
+      ? includeAllProductsInPrint || (passedProductList.length === 0 && allStoreProducts.length > 0)
+        ? allStoreProducts
+        : passedProductList
+      : passedProductList;
+  const effectiveProductTotalUnits =
+    type === 'PRODUCT_LIST'
+      ? effectiveProductList.reduce((sum, p) => sum + Number(p?.stock || 0), 0)
+      : Number(data?.totalUnits || 0);
+  const effectiveProductTotalCostValue =
+    type === 'PRODUCT_LIST'
+      ? effectiveProductList.reduce((sum, p) => sum + Number(p?.stock || 0) * Number(p?.purchasePrice || 0), 0)
+      : Number(data?.totalCostValue || 0);
 
   // Document labels based on document title / type
   const isPurchase = type === 'PURCHASE_VOUCHER' || data.documentTitle?.includes('PURCHASE') || data.documentTitle?.includes('ক্রয়');
@@ -347,6 +370,34 @@ export const PrintInvoiceModal: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+            {/* All Products vs Filtered Products switcher when printing Product Stock List */}
+            {hasMoreStoreProducts && (
+              <div className="flex items-center bg-amber-100 dark:bg-amber-950/60 p-0.5 rounded-lg text-[11px] sm:text-xs font-medium border border-amber-300 dark:border-amber-800">
+                <button
+                  type="button"
+                  onClick={() => setIncludeAllProductsInPrint(false)}
+                  className={`px-2 py-1 rounded-md transition-colors cursor-pointer ${
+                    !includeAllProductsInPrint
+                      ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white shadow-xs font-bold'
+                      : 'text-amber-800 dark:text-amber-300 hover:text-zinc-900'
+                  }`}
+                >
+                  {language === 'bn' ? `ফিল্টারকৃত (${passedProductList.length})` : `Filtered (${passedProductList.length})`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIncludeAllProductsInPrint(true)}
+                  className={`px-2 py-1 rounded-md transition-colors cursor-pointer ${
+                    includeAllProductsInPrint
+                      ? 'bg-blue-600 text-white shadow-xs font-bold'
+                      : 'text-amber-800 dark:text-amber-300 hover:text-zinc-900'
+                  }`}
+                >
+                  {language === 'bn' ? `সকল পণ্য (${allStoreProducts.length})` : `All Products (${allStoreProducts.length})`}
+                </button>
+              </div>
+            )}
+
             {/* Format Selector: Available for all document types (Invoices, Reports, Lists, Vouchers) */}
             <div className="flex items-center bg-zinc-200 dark:bg-zinc-800 p-0.5 rounded-lg text-[11px] sm:text-xs font-medium">
               <button
@@ -579,8 +630,8 @@ export const PrintInvoiceModal: React.FC = () => {
         </div>
 
         {/* Document Body Viewport */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-zinc-100 dark:bg-zinc-950 flex justify-center print:block print:p-0 print:bg-white print:overflow-visible print:h-auto">
-          <div ref={printContentRef} className="printable-document-container w-full flex justify-center print:block">
+        <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-zinc-100 dark:bg-zinc-950 flex items-start justify-center print:block print:p-0 print:bg-white print:overflow-visible print:h-auto">
+          <div ref={printContentRef} className="printable-document-container w-full flex items-start justify-center print:block">
           {/* ========================================================================= */}
           {/* FORMAT 1: 80MM POS THERMAL RECEIPT */}
           {/* ========================================================================= */}
@@ -3470,7 +3521,7 @@ export const PrintInvoiceModal: React.FC = () => {
                     {data.reportHeading || title || 'STOCK VALUATION REPORT'}
                   </div>
                   <div className="text-[10px] text-zinc-600">
-                    Date: {data.generatedDate || printToday} • Items: {data.products?.length || 0}
+                    Date: {data.generatedDate || printToday} • Items: {effectiveProductList.length}
                   </div>
                 </div>
 
@@ -3485,7 +3536,7 @@ export const PrintInvoiceModal: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-dashed divide-zinc-200">
-                    {data.products?.map((p: any, idx: number) => {
+                    {effectiveProductList.map((p: any, idx: number) => {
                       const cost = Number(p.purchasePrice || 0);
                       const stock = Number(p.stock || 0);
                       const val = cost * stock;
@@ -3510,11 +3561,11 @@ export const PrintInvoiceModal: React.FC = () => {
                 <div className="border-t-2 border-black pt-2 space-y-1 text-[11px]">
                   <div className="flex justify-between font-bold">
                     <span>Total Stock Units:</span>
-                    <span>{data.totalUnits?.toLocaleString() || 0}</span>
+                    <span>{effectiveProductTotalUnits.toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between font-bold text-sm border-t border-dashed border-zinc-400 pt-1">
                     <span>Total Cost Value:</span>
-                    <span>৳{Number(data.totalCostValue || 0).toLocaleString()}</span>
+                    <span>৳{effectiveProductTotalCostValue.toLocaleString()}</span>
                   </div>
                 </div>
 
@@ -3524,7 +3575,7 @@ export const PrintInvoiceModal: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <div className={`printable-report block w-full ${printOrientation === 'LANDSCAPE' ? 'max-w-[1200px]' : 'max-w-[950px]'} bg-white text-black p-6 md:p-8 shadow-xl border border-zinc-200 rounded-sm font-sans print:block print:shadow-none print:border-none print:p-0 print:w-full print:max-w-none print:min-h-0 print:h-auto`}>
+              <div className={`printable-report block mx-auto w-full ${printOrientation === 'LANDSCAPE' ? 'max-w-[1200px]' : 'max-w-[950px]'} bg-white text-black p-6 md:p-8 shadow-xl border border-zinc-200 rounded-sm font-sans print:block print:shadow-none print:border-none print:p-0 print:w-full print:max-w-none print:min-h-0 print:h-auto`}>
                 {/* Top Header */}
                 <div className="flex justify-between items-start border-b-2 border-zinc-900 pb-2.5 mb-3">
                   <div className="flex items-start gap-3">
@@ -3571,7 +3622,7 @@ export const PrintInvoiceModal: React.FC = () => {
                       Date: {data.generatedDate || printToday}
                     </div>
                     <div className="text-zinc-900 font-bold mt-0.5">
-                      Total Items: {(data.products?.length ?? data.totalProducts ?? 0).toLocaleString()}
+                      Total Items: {effectiveProductList.length.toLocaleString()}
                     </div>
                   </div>
                 </div>
@@ -3584,9 +3635,11 @@ export const PrintInvoiceModal: React.FC = () => {
                   >
                     {data.reportHeading || title || 'PRODUCT STOCK & VALUATION REPORT'}
                   </div>
-                  {data.filterTag && (
+                  {(includeAllProductsInPrint ? (language === 'bn' ? 'সকল সক্রিয় পণ্য (All Inventory)' : 'All Inventory Products') : data.filterTag) && (
                     <div className="text-[10px] text-zinc-600 mt-1 font-medium">
-                      {data.filterTag}
+                      {includeAllProductsInPrint
+                        ? (language === 'bn' ? 'সকল সক্রিয় পণ্য (All Inventory)' : 'All Inventory Products')
+                        : data.filterTag}
                     </div>
                   )}
                 </div>
@@ -3616,8 +3669,8 @@ export const PrintInvoiceModal: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-200">
-                    {data.products && data.products.length > 0 ? (
-                      data.products.map((p: any, idx: number) => {
+                    {effectiveProductList.length > 0 ? (
+                      effectiveProductList.map((p: any, idx: number) => {
                         const cost = Number(p.purchasePrice || 0);
                         const sale = Number(p.salesPrice || 0);
                         const stock = Number(p.stock || 0);
@@ -3690,10 +3743,10 @@ export const PrintInvoiceModal: React.FC = () => {
                       style={{ backgroundColor: '#f4f4f5', breakInside: 'avoid', pageBreakInside: 'avoid' }}
                     >
                       <td colSpan={isPharmacyMode ? 13 : 10} className="py-2 px-2 text-right uppercase tracking-wider font-bold">
-                        TOTAL INVENTORY SUMMARY ({(data.products?.length ?? data.totalProducts ?? 0).toLocaleString()} Items):
+                        TOTAL INVENTORY SUMMARY ({effectiveProductList.length.toLocaleString()} Items):
                       </td>
-                      <td className="py-2 px-1 text-center font-mono font-bold text-black">{Number(data.totalUnits || 0).toLocaleString()}</td>
-                      <td className="py-2 px-1 text-right font-mono font-bold text-emerald-800 whitespace-nowrap">৳{Number(data.totalCostValue || 0).toLocaleString()}</td>
+                      <td className="py-2 px-1 text-center font-mono font-bold text-black">{effectiveProductTotalUnits.toLocaleString()}</td>
+                      <td className="py-2 px-1 text-right font-mono font-bold text-emerald-800 whitespace-nowrap">৳{effectiveProductTotalCostValue.toLocaleString()}</td>
                     </tr>
                   </tfoot>
                 </table>

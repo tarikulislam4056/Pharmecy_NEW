@@ -395,7 +395,7 @@ export const BatchInventoryView: React.FC = () => {
       expiring30DaysValuation,
       expiring30DaysUnits,
     };
-  }, [allBatchItems, selectedCategory, selectedGeneric, categories]);
+  }, [allBatchItems, selectedCategory, selectedGeneric, categories, isPharmacyMode]);
 
   // Filtered Items (applying statusFilter and sorting)
   const filteredItems = useMemo(() => {
@@ -597,7 +597,7 @@ export const BatchInventoryView: React.FC = () => {
           { header: 'Expiry Date', key: 'expDate' },
           { header: 'Sales Rate', key: 'salesPrice', align: 'right', format: 'currency' },
         ],
-        rows: filteredItems.slice(0, 50).map((item) => ({
+        rows: filteredItems.map((item) => ({
           batchNumber: item.batchNumber,
           productName: item.productName,
           sku: `${item.sku} ${item.barcode ? `(${item.barcode})` : ''}`,

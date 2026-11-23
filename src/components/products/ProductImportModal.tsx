@@ -169,11 +169,17 @@ export const ProductImportModal: React.FC<ProductImportModalProps> = ({ onClose 
         }
       }
 
+      const isPlaceholderVal = (val: string) =>
+        ['-', '--', 'n/a', 'na', 'none', 'null', 'nil', '0', 'undefined'].includes(val.trim().toLowerCase());
+
       const name = rawName || (hasHeader ? (rowData[0] || `Product ${i}`) : `Product ${i}`);
-      const sku = rawSku || `SKU-${baseTs}-${i}`;
+      const sku = rawSku && !isPlaceholderVal(rawSku) ? rawSku : `SKU-${baseTs}-${i}`;
 
       const rawBarcode = getByHeader(h => h.includes('barcode') || h.includes('ean') || h.includes('upc') || h.includes('বারকোড'), 2);
-      const barcode = rawBarcode || `${Math.floor(1000000000000 + Math.random() * 9000000000000)}`;
+      const barcode =
+        rawBarcode && !isPlaceholderVal(rawBarcode)
+          ? rawBarcode
+          : `${Math.floor(1000000000000 + Math.random() * 9000000000000)}`;
 
       const categoryName =
         getByHeader(h => h.includes('category') || h === 'cat' || h.includes('ক্যাটাগরি'), 3) || 'General';
@@ -381,7 +387,28 @@ export const ProductImportModal: React.FC<ProductImportModalProps> = ({ onClose 
           }
 
           const firstLine = lines[0];
-          const delimiter = firstLine.includes(';') ? ';' : firstLine.includes('\t') ? '\t' : ',';
+          const countUnquotedDelimiter = (line: string, delim: string): number => {
+            let count = 0;
+            let inQuotes = false;
+            for (let i = 0; i < line.length; i++) {
+              const ch = line[i];
+              if (ch === '"') {
+                inQuotes = !inQuotes;
+              } else if (ch === delim && !inQuotes) {
+                count++;
+              }
+            }
+            return count;
+          };
+          const commaCount = countUnquotedDelimiter(firstLine, ',');
+          const semiCount = countUnquotedDelimiter(firstLine, ';');
+          const tabCount = countUnquotedDelimiter(firstLine, '\t');
+          const delimiter =
+            semiCount > commaCount && semiCount >= tabCount
+              ? ';'
+              : tabCount > commaCount && tabCount > semiCount
+              ? '\t'
+              : ',';
 
           const parseRow = (line: string, delim: string): string[] => {
             const result: string[] = [];

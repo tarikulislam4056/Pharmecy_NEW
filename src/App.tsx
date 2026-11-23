@@ -440,7 +440,7 @@ const MainLayout: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-[#F8FAFC] dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100">
+    <div className="flex h-screen w-full overflow-hidden bg-[#F8FAFC] dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 print:block print:h-auto print:min-h-0 print:overflow-visible print:bg-white">
       {/* Sidebar navigation */}
       <div className="no-print print:hidden h-full shrink-0 flex">
         <Sidebar

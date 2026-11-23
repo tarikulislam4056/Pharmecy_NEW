@@ -10,7 +10,7 @@ import { DatePeriodFilter } from '../common/DatePeriodFilter';
 import { CameraBarcodeScannerModal } from '../common/CameraBarcodeScannerModal';
 import { MultiUserAuditTrail } from '../common/MultiUserAuditTrail';
 import { canUserDelete, canUserEdit, canUserExportProductCsv } from '../../utils/permissions';
-import { getProductExpirySummary } from '../../utils/dateUtils';
+import { getProductExpirySummary, normalizeDateToISO } from '../../utils/dateUtils';
 import { formatStockWithUnit, hasDualUnit, formatCartonBreakdown, formatCleanNumber } from '../../utils/unitConversion';
 import {
   getUnifiedCategoryOptions,
@@ -183,12 +183,12 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
       if (!matchesCategoryFilter(p, selectedCategory, categories)) return false;
       if (!q) return true;
       return (
-        p.name.toLowerCase().includes(q) ||
-        (p.nameBn && p.nameBn.toLowerCase().includes(q)) ||
-        p.sku.toLowerCase().includes(q) ||
-        p.barcode.toLowerCase().includes(q) ||
-        (isPharmacyMode && p.generic && p.generic.toLowerCase().includes(q)) ||
-        (p.batchNumber && p.batchNumber.toLowerCase().includes(q))
+        (p.name || '').toLowerCase().includes(q) ||
+        (p.nameBn || '').toLowerCase().includes(q) ||
+        (p.sku || '').toLowerCase().includes(q) ||
+        (p.barcode || '').toLowerCase().includes(q) ||
+        (isPharmacyMode && (p.generic || '').toLowerCase().includes(q)) ||
+        (p.batchNumber || '').toLowerCase().includes(q)
       );
     });
   }, [expiredProducts, categories, search, selectedCategory, isPharmacyMode]);
@@ -199,12 +199,12 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
       if (!matchesCategoryFilter(p, selectedCategory, categories)) return false;
       if (!q) return true;
       return (
-        p.name.toLowerCase().includes(q) ||
-        (p.nameBn && p.nameBn.toLowerCase().includes(q)) ||
-        p.sku.toLowerCase().includes(q) ||
-        p.barcode.toLowerCase().includes(q) ||
-        (isPharmacyMode && p.generic && p.generic.toLowerCase().includes(q)) ||
-        (p.batchNumber && p.batchNumber.toLowerCase().includes(q))
+        (p.name || '').toLowerCase().includes(q) ||
+        (p.nameBn || '').toLowerCase().includes(q) ||
+        (p.sku || '').toLowerCase().includes(q) ||
+        (p.barcode || '').toLowerCase().includes(q) ||
+        (isPharmacyMode && (p.generic || '').toLowerCase().includes(q)) ||
+        (p.batchNumber || '').toLowerCase().includes(q)
       );
     });
   }, [expiringSoonProducts, categories, search, selectedCategory, isPharmacyMode]);
@@ -215,16 +215,19 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
       if (!matchesCategoryFilter(p, selectedCategory, categories)) return false;
       if (!q) return true;
       return (
-        p.name.toLowerCase().includes(q) ||
-        (p.nameBn && p.nameBn.toLowerCase().includes(q)) ||
-        p.sku.toLowerCase().includes(q) ||
-        p.barcode.toLowerCase().includes(q) ||
-        (isPharmacyMode && p.generic && p.generic.toLowerCase().includes(q)) ||
-        (p.batchNumber && p.batchNumber.toLowerCase().includes(q))
+        (p.name || '').toLowerCase().includes(q) ||
+        (p.nameBn || '').toLowerCase().includes(q) ||
+        (p.sku || '').toLowerCase().includes(q) ||
+        (p.barcode || '').toLowerCase().includes(q) ||
+        (isPharmacyMode && (p.generic || '').toLowerCase().includes(q)) ||
+        (p.batchNumber || '').toLowerCase().includes(q)
       );
     });
   }, [freshDatedProducts, categories, search, selectedCategory, isPharmacyMode]);
-  const lowStockCount = useMemo(() => products.filter(p => p.stock <= p.reorderLevel).length, [products]);
+  const lowStockCount = useMemo(
+    () => products.filter(p => Number(p.stock || 0) <= Number(p.reorderLevel ?? 0)).length,
+    [products]
+  );
   const supplierReturnsCount = useMemo(() => (expiredReturnLogs || []).filter(l => l.actionType === 'RETURN_SUPPLIER').length, [expiredReturnLogs]);
   const writeOffsCount = useMemo(() => (expiredReturnLogs || []).filter(l => l.actionType === 'WRITE_OFF').length, [expiredReturnLogs]);
   const replacementsCount = useMemo(() => (expiredReturnLogs || []).filter(l => l.actionType === 'REPLACEMENT').length, [expiredReturnLogs]);
@@ -255,37 +258,41 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
 
   // Filtered Products
   const filteredProducts = useMemo(() => {
+    const query = search.trim().toLowerCase();
     return products.filter(p => {
-      const query = search.toLowerCase();
+      const resolvedCatLower = query ? resolveProductCategoryName(p, categories).toLowerCase() : '';
       const matchSearch =
         !query ||
-        p.name.toLowerCase().includes(query) ||
-        (p.nameBn && p.nameBn.toLowerCase().includes(query)) ||
-        p.sku.toLowerCase().includes(query) ||
-        p.barcode.toLowerCase().includes(query) ||
-        (isPharmacyMode && p.generic && p.generic.toLowerCase().includes(query)) ||
-        (p.manufacturer && p.manufacturer.toLowerCase().includes(query)) ||
-        (p.rackLocation && p.rackLocation.toLowerCase().includes(query)) ||
-        (isPharmacyMode && p.strength && p.strength.toLowerCase().includes(query)) ||
-        (isPharmacyMode && p.dosageForm && p.dosageForm.toLowerCase().includes(query)) ||
-        (isPharmacyMode && p.dosageSchedule && p.dosageSchedule.toLowerCase().includes(query)) ||
-        (p.batchNumber && p.batchNumber.toLowerCase().includes(query)) ||
-        (p.batches && p.batches.some(b => b.batchNumber && b.batchNumber.toLowerCase().includes(query)));
+        (p.name || '').toLowerCase().includes(query) ||
+        (p.nameBn || '').toLowerCase().includes(query) ||
+        (p.sku || '').toLowerCase().includes(query) ||
+        (p.barcode || '').toLowerCase().includes(query) ||
+        resolvedCatLower.includes(query) ||
+        (isPharmacyMode && (p.generic || '').toLowerCase().includes(query)) ||
+        (p.manufacturer || '').toLowerCase().includes(query) ||
+        (p.rackLocation || '').toLowerCase().includes(query) ||
+        (isPharmacyMode && (p.strength || '').toLowerCase().includes(query)) ||
+        (isPharmacyMode && (p.dosageForm || '').toLowerCase().includes(query)) ||
+        (isPharmacyMode && (p.dosageSchedule || '').toLowerCase().includes(query)) ||
+        (p.batchNumber || '').toLowerCase().includes(query) ||
+        (Array.isArray(p.batches) && p.batches.some(b => (b?.batchNumber || '').toLowerCase().includes(query)));
 
       const matchCat = matchesCategoryFilter(p, selectedCategory, categories);
       const matchGen = !isPharmacyMode || selectedGeneric === 'ALL' || (Boolean(p.generic) && p.generic!.trim().toLowerCase() === selectedGeneric.trim().toLowerCase());
       const matchMan = selectedManufacturer === 'ALL' || (Boolean(p.manufacturer) && p.manufacturer!.trim().toLowerCase() === selectedManufacturer.trim().toLowerCase());
 
       // Stock status filter
+      const safeStock = Number(p.stock || 0);
+      const safeReorder = Number(p.reorderLevel ?? 0);
       let matchStock = true;
-      if (stockStatusFilter === 'IN_STOCK') matchStock = p.stock > 0;
-      else if (stockStatusFilter === 'OUT_OF_STOCK') matchStock = p.stock <= 0;
-      else if (stockStatusFilter === 'LOW_STOCK') matchStock = p.stock <= p.reorderLevel;
+      if (stockStatusFilter === 'IN_STOCK') matchStock = safeStock > 0;
+      else if (stockStatusFilter === 'OUT_OF_STOCK') matchStock = safeStock <= 0;
+      else if (stockStatusFilter === 'LOW_STOCK') matchStock = safeStock <= safeReorder;
 
       // Tab matching
       let matchTab = true;
       if (activeTab === 'low-stock') {
-        matchTab = p.stock <= p.reorderLevel;
+        matchTab = safeStock <= safeReorder;
       } else if (activeTab === 'expiry') {
         const summary = productExpirySummaries.get(p.id);
         if (expirySubFilter === 'expired') {
@@ -301,24 +308,30 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
 
       // Date Period matching
       let matchDate = true;
-      if (startDate && endDate) {
+      if (startDate || endDate) {
         if (dateFilterTarget === 'createdAt') {
-          const productCreatedDate = (p.createdAt || '').substring(0, 10);
+          const productCreatedDate = normalizeDateToISO(p.createdAt) || (p.createdAt ? String(p.createdAt).substring(0, 10) : '');
           if (productCreatedDate) {
-            matchDate = productCreatedDate >= startDate && productCreatedDate <= endDate;
+            matchDate =
+              (!startDate || productCreatedDate >= startDate) &&
+              (!endDate || productCreatedDate <= endDate);
           } else {
             matchDate = true;
           }
         } else if (dateFilterTarget === 'expDate') {
           const allExpDates: string[] = [];
-          if (p.expDate) allExpDates.push(p.expDate);
-          if (p.batches && p.batches.length > 0) {
+          const pExp = normalizeDateToISO(p.expDate);
+          if (pExp) allExpDates.push(pExp);
+          if (Array.isArray(p.batches) && p.batches.length > 0) {
             p.batches.forEach(b => {
-              if (b.expDate) allExpDates.push(b.expDate);
+              const bExp = normalizeDateToISO(b?.expDate);
+              if (bExp) allExpDates.push(bExp);
             });
           }
           if (allExpDates.length > 0) {
-            matchDate = allExpDates.some(d => d >= startDate && d <= endDate);
+            matchDate = allExpDates.some(
+              d => (!startDate || d >= startDate) && (!endDate || d <= endDate)
+            );
           } else {
             matchDate = false;
           }
@@ -340,6 +353,8 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
     startDate,
     endDate,
     dateFilterTarget,
+    productExpirySummaries,
+    isPharmacyMode,
   ]);
 
   // Helper to resolve creator / user display name
@@ -751,6 +766,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
           type="button"
           onClick={() => {
             setActiveTab('low-stock');
+            setDateFilterTarget('createdAt');
           }}
           className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer flex items-center gap-2 ${
             activeTab === 'low-stock'
@@ -1227,8 +1243,28 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
             )}
           </div>
 
-          <div className="font-mono text-zinc-500 font-semibold">
-            {language === 'bn' ? `মোট ${filteredProducts.length}টি পণ্য প্রদর্শিত` : `Showing ${filteredProducts.length} products`}
+          <div className="flex items-center gap-2 font-mono text-zinc-500 font-semibold">
+            <span>
+              {filteredProducts.length !== products.length
+                ? language === 'bn'
+                  ? `মোট ${products.length}টির মধ্যে ${filteredProducts.length}টি পণ্য প্রদর্শিত`
+                  : `Showing ${filteredProducts.length} of ${products.length} products`
+                : language === 'bn'
+                  ? `মোট ${filteredProducts.length}টি পণ্য প্রদর্শিত`
+                  : `Showing ${filteredProducts.length} products`}
+            </span>
+            {(filteredProducts.length !== products.length || isAnyFilterActive || activeTab !== 'all') && products.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  resetAllFilters();
+                  setActiveTab('all');
+                }}
+                className="px-2 py-0.5 rounded bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 text-[11px] font-sans font-bold cursor-pointer transition-colors"
+              >
+                {language === 'bn' ? `সব দেখান (${products.length})` : `Show All (${products.length})`}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1668,7 +1704,25 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
                 {filteredProducts.length === 0 ? (
                   <tr>
                     <td colSpan={isPharmacyMode ? 16 : 13} className="py-12 text-center text-zinc-400">
-                      {language === 'bn' ? 'নির্বাচিত ফিল্টারে কোনো পণ্য পাওয়া যায়নি।' : 'No products found for the selected filters.'}
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <span>
+                          {language === 'bn' ? 'নির্বাচিত ফিল্টারে কোনো পণ্য পাওয়া যায়নি।' : 'No products found for the selected filters.'}
+                        </span>
+                        {products.length > 0 && (isAnyFilterActive || activeTab !== 'all') && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              resetAllFilters();
+                              setActiveTab('all');
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer transition-colors"
+                          >
+                            {language === 'bn'
+                              ? `ফিল্টার রিসেট করে সকল (${products.length}টি) পণ্য দেখান`
+                              : `Reset Filters & Show All (${products.length}) Products`}
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ) : (
@@ -1677,12 +1731,21 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
                       p.salesPrice > 0
                         ? (((p.salesPrice - p.purchasePrice) / p.salesPrice) * 100).toFixed(1)
                         : '0';
-                    const isLow = p.stock <= p.reorderLevel;
+                    const isLow = Number(p.stock || 0) <= Number(p.reorderLevel ?? 0);
                     const summary = productExpirySummaries.get(p.id) || getProductExpirySummary(p, 30);
                     const itemExpired = summary.hasExpired;
                     const itemExpiringSoon = summary.hasExpiringSoon;
                     const itemFresh = summary.hasFresh;
                     const lineValuation = Number(p.stock || 0) * Number(p.purchasePrice || 0);
+                    const resolvedCategory = resolveProductCategoryName(p, categories);
+                    const combinedBatchNo = Array.from(
+                      new Set([
+                        ...(p.batchNumber && String(p.batchNumber).trim() ? [String(p.batchNumber).trim()] : []),
+                        ...((p.batches || [])
+                          .map(b => (b?.batchNumber ? String(b.batchNumber).trim() : ''))
+                          .filter(Boolean)),
+                      ])
+                    ).join(', ');
 
                     return (
                       <tr
@@ -1754,7 +1817,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
 
                         {/* 7. Category */}
                         <td className="py-3 px-3 whitespace-nowrap text-zinc-600 dark:text-zinc-300">
-                          {p.categoryName || 'General'}
+                          {resolvedCategory}
                         </td>
 
                         {/* 8. Rack Location */}
@@ -1769,7 +1832,7 @@ export const ProductsListView: React.FC<ProductsListViewProps> = ({
 
                         {/* 10. Batch Number */}
                         <td className="py-3 px-3 whitespace-nowrap font-mono text-zinc-700 dark:text-zinc-300">
-                          {p.batchNumber || 'N/A'}
+                          {combinedBatchNo || 'N/A'}
                         </td>
 
                         {/* 11. Expiry Date */}

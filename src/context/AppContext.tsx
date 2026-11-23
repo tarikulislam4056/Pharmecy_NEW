@@ -2936,7 +2936,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (Array.isArray(data.products)) {
             setProducts(prev => {
               const merged = shouldMerge ? mergeEntitiesById(prev, data.products) : data.products;
-              return (merged as Product[]).filter(p => !allDeletedProductIds.has(String(p.id)) && (!p.sku || !allDeletedProductIds.has(String(p.sku))));
+              return (merged as Product[]).filter(p => p && !allDeletedProductIds.has(String(p.id)));
             });
           }
           if (Array.isArray(data.categories)) {
@@ -3320,6 +3320,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       initialStock: b.initialStock !== undefined ? clampNonNegative(b.initialStock, 4) : b.initialStock,
     }));
 
+    const newProductId = `prod-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const categoryById = categories.find(c => c.id === prodData.categoryId);
     const categoryByName = !categoryById && prodData.categoryName
       ? categories.find(c => c.name.trim().toLowerCase() === prodData.categoryName!.trim().toLowerCase())
@@ -3327,14 +3328,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const resolvedCat = categoryById || categoryByName;
     const newProduct: Product = {
       ...prodData,
+      name: (prodData.name || '').trim() || 'Unnamed Product',
+      sku: (prodData.sku || '').trim(),
+      barcode: (prodData.barcode || '').trim(),
       categoryId: resolvedCat?.id || prodData.categoryId,
       stock: safeStock,
       batches: safeBatches,
-      id: `prod-${Date.now()}`,
+      id: newProductId,
       categoryName: resolvedCat?.name || prodData.categoryName || 'General',
       createdBy: currentUser?.id || 'usr-1',
       createdAt: new Date().toISOString().split('T')[0],
     };
+    const clearKeys = [newProductId, newProduct.sku, newProduct.name].filter(Boolean) as string[];
+    if (clearKeys.length > 0) {
+      const clearSet = new Set(clearKeys);
+      setDeletedProductIds(prev => {
+        const filtered = prev.filter(item => !clearSet.has(String(item)));
+        if (filtered.length !== prev.length) {
+          try {
+            localStorage.setItem('DOKANPRO_DELETED_PRODUCT_IDS', JSON.stringify(filtered));
+          } catch {}
+        }
+        return filtered;
+      });
+      removeDeletedTombstones('products', clearKeys);
+    }
     setProducts(prev => [newProduct, ...prev]);
     setTimeout(() => {
       triggerServerPush(undefined, true);
@@ -3440,17 +3458,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const prod = products.find(p => p.id === id);
     if (!prod) return;
 
-    // Track in deletedProductIds & deletedEntityIds so it is never re-synced or resurrected
+    // Track by unique product ID in deletedProductIds & deletedEntityIds so deleted IDs do not resurrect,
+    // while allowing newly added/re-imported products with the same SKU/name to persist safely.
     setDeletedProductIds(prev => {
-      const updated = Array.from(new Set([...prev, id, prod.sku, prod.name].filter(Boolean) as string[]));
+      const updated = Array.from(new Set([...prev, id].filter(Boolean) as string[]));
       try {
         localStorage.setItem('DOKANPRO_DELETED_PRODUCT_IDS', JSON.stringify(updated));
       } catch {}
       return updated;
     });
-    recordDeletedTombstones('products', [id, prod.sku]);
+    recordDeletedTombstones('products', [id]);
 
     setProducts(prev => prev.filter(p => p.id !== id));
+    setTimeout(() => {
+      triggerServerPush(undefined, true);
+    }, 100);
     
     const nowStr = formatDeletionTimestamp();
     if (isAdminUser()) {
@@ -3507,20 +3529,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     const count = products.length;
     const snapshotProducts = [...products];
-    const allIds = snapshotProducts.map(p => p.id);
-    const allSkus = snapshotProducts.map(p => p.sku).filter(Boolean) as string[];
-    const allNames = snapshotProducts.map(p => p.name).filter(Boolean) as string[];
+    const allIds = snapshotProducts.map(p => p.id).filter(Boolean) as string[];
 
     setDeletedProductIds(prev => {
-      const updated = Array.from(new Set([...prev, ...allIds, ...allSkus, ...allNames]));
+      const updated = Array.from(new Set([...prev, ...allIds]));
       try {
         localStorage.setItem('DOKANPRO_DELETED_PRODUCT_IDS', JSON.stringify(updated));
       } catch {}
       return updated;
     });
-    recordDeletedTombstones('products', [...allIds, ...allSkus]);
+    recordDeletedTombstones('products', allIds);
 
     setProducts([]);
+    setTimeout(() => {
+      triggerServerPush(undefined, true);
+    }, 100);
 
     archiveAdminDeletion(
       snapshotProducts.map(prod => ({
@@ -3725,8 +3748,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const bulkImportProducts = (newProducts: Omit<Product, 'id' | 'createdAt'>[]) => {
     const timestamp = new Date().toISOString().split('T')[0];
-    const existingBarcodes = new Set(products.map(p => p.barcode?.trim().toLowerCase()).filter(Boolean));
-    const existingSkus = new Set(products.map(p => p.sku?.trim().toLowerCase()).filter(Boolean));
+    const isPlaceholderCode = (val?: string) => {
+      const norm = (val || '').trim().toLowerCase();
+      return !norm || ['-', '--', 'n/a', 'na', 'none', 'null', 'nil', '0', 'undefined'].includes(norm);
+    };
+    const isExcelScientificNotation = (val?: string) =>
+      /^\d+(\.\d+)?e[+-]?\d+$/i.test((val || '').trim());
+
+    const existingBarcodes = new Set(
+      products
+        .map(p => p.barcode?.trim().toLowerCase())
+        .filter((v): v is string => Boolean(v) && !isPlaceholderCode(v) && !isExcelScientificNotation(v))
+    );
+    const existingSkus = new Set(
+      products
+        .map(p => p.sku?.trim().toLowerCase())
+        .filter((v): v is string => Boolean(v) && !isPlaceholderCode(v))
+    );
 
     const created: Product[] = [];
     let skipped = 0;
@@ -3741,8 +3779,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const baseTime = Date.now();
 
     newProducts.forEach((p, idx) => {
-      const barcodeKey = p.barcode?.trim().toLowerCase();
-      const skuKey = p.sku?.trim().toLowerCase();
+      const rawBarcode = (p.barcode || '').trim();
+      const rawSku = (p.sku || '').trim();
+      const barcodeKey =
+        !isPlaceholderCode(rawBarcode) && !isExcelScientificNotation(rawBarcode)
+          ? rawBarcode.toLowerCase()
+          : '';
+      const skuKey = !isPlaceholderCode(rawSku) ? rawSku.toLowerCase() : '';
 
       if ((barcodeKey && existingBarcodes.has(barcodeKey)) || (skuKey && existingSkus.has(skuKey))) {
         skipped++;
@@ -3781,6 +3824,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       created.push({
         ...p,
+        name: (p.name || '').trim() || `Product ${idx + 1}`,
+        sku: rawSku,
+        barcode: rawBarcode,
         categoryId: resolvedCatId || 'cat-default',
         categoryName: resolvedCatName,
         stock: clampNonNegative(p.stock, 4),
@@ -3789,7 +3835,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           stock: clampNonNegative(b.stock, 4),
           initialStock: b.initialStock !== undefined ? clampNonNegative(b.initialStock, 4) : b.initialStock,
         })),
-        id: `prod-${baseTime}-${idx}`,
+        id: `prod-${baseTime}-${idx}-${Math.random().toString(36).substring(2, 5)}`,
         createdBy: currentUser?.id || 'usr-1',
         createdAt: timestamp,
       });
@@ -3798,11 +3844,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (newCategoriesToAdd.length > 0) {
       setCategories(prev => [...prev, ...newCategoriesToAdd]);
     }
-    setProducts(prev => [...created, ...prev]);
+    if (created.length > 0) {
+      const clearKeys = created.flatMap(p => [p.id, p.sku, p.name]).filter(Boolean) as string[];
+      const clearSet = new Set(clearKeys);
+      setDeletedProductIds(prev => {
+        const filtered = prev.filter(item => !clearSet.has(String(item)));
+        if (filtered.length !== prev.length) {
+          try {
+            localStorage.setItem('DOKANPRO_DELETED_PRODUCT_IDS', JSON.stringify(filtered));
+          } catch {}
+        }
+        return filtered;
+      });
+      removeDeletedTombstones('products', clearKeys);
+      setProducts(prev => [...created, ...prev]);
+      setTimeout(() => {
+        triggerServerPush(undefined, true);
+      }, 150);
+    }
     showToast(
       language === 'bn'
-        ? `${created.length} টি পণ্য সফলভাবে ইমপোর্ট হয়েছে${skipped > 0 ? ` (${skipped} টি ডুপ্লিকেট বারকোড বাদ দেওয়া হয়েছে)` : ''}।`
-        : `Successfully imported ${created.length} products${skipped > 0 ? ` (${skipped} duplicate codes skipped)` : ''}.`
+        ? `${created.length} টি পণ্য সফলভাবে ইমপোর্ট হয়েছে${skipped > 0 ? ` (${skipped} টি ডুপ্লিকেট SKU/বারকোড বাদ দেওয়া হয়েছে)` : ''}।`
+        : `Successfully imported ${created.length} products${skipped > 0 ? ` (${skipped} duplicate SKU/barcode rows skipped)` : ''}.`
     );
     return created.length;
   };

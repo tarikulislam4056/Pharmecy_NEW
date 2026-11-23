@@ -42,8 +42,10 @@
   html, body {
     background: #ffffff !important;
     color: #000000 !important;
+    display: block !important;
     height: auto !important;
-    min-height: 100% !important;
+    min-height: 0 !important;
+    max-height: none !important;
     overflow: visible !important;
     margin: 0 !important;
     padding: 0 !important;
@@ -65,11 +67,13 @@
     display: none !important;
   }
 
-  /* 2. ISOLATE ROOT & PRINT CONTAINER */
-  #root {
+  /* 2. ISOLATE ROOT & PRINT CONTAINER (unclip h-screen / overflow-hidden / flex) */
+  #root,
+  #root > div {
     display: block !important;
     height: auto !important;
-    min-height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
     overflow: visible !important;
     position: static !important;
     background: transparent !important;
@@ -81,6 +85,9 @@
     background: transparent !important;
     padding: 0 !important;
     margin: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
     overflow: visible !important;
     display: block !important;
     width: 100% !important;
@@ -114,6 +121,7 @@
   .printable-statement,
   .printable-receipt,
   .printable-barcodes {
+    display: block !important;
     box-shadow: none !important;
     border-color: #000000 !important;
     width: 100% !important;
@@ -141,11 +149,6 @@
     page-break-inside: avoid !important;
     break-after: auto !important;
     page-break-after: auto !important;
-  }
-
-  td, th {
-    break-inside: avoid !important;
-    page-break-inside: avoid !important;
   }
 
   thead {

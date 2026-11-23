@@ -1,8 +1,9 @@
 /**
  * DokanPro High-Precision Cross-Browser Print Helper
- * 
+ *
  * Works seamlessly in all modern browsers, desktop & mobile,
  * as well as inside sandboxed iframes (e.g. AI Studio development environment).
+ * Guarantees clean multi-page table pagination with repeating headers and zero clipped rows.
  */
 
 export interface PrintOptions {
@@ -18,7 +19,6 @@ export function printElement(
   options: PrintOptions = {}
 ): boolean {
   if (!element) {
-    // Fallback if element not found: standard window print
     window.focus();
     window.print();
     return true;
@@ -27,7 +27,6 @@ export function printElement(
   const { documentTitle = 'DokanPro Document', isThermal80mm = false, isLandscape = false } = options;
 
   try {
-    // 1. Check if an isolated iframe already exists, else create one
     const frameId = '__dokanpro_isolated_print_frame__';
     let printFrame = document.getElementById(frameId) as HTMLIFrameElement | null;
 
@@ -38,14 +37,15 @@ export function printElement(
     printFrame = document.createElement('iframe');
     printFrame.id = frameId;
     printFrame.name = frameId;
+    // Standard zero-box invisible iframe (avoids fixed 1000px height or visibility:hidden clipping in Chrome)
     printFrame.style.position = 'fixed';
-    printFrame.style.top = '-10000px';
-    printFrame.style.left = '-10000px';
-    printFrame.style.width = isLandscape ? '1123px' : '794px';
-    printFrame.style.height = '1000px';
-    printFrame.style.border = 'none';
-    printFrame.style.zIndex = '-9999';
-    printFrame.style.visibility = 'hidden';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
+    printFrame.style.border = '0';
+    printFrame.style.opacity = '0';
+    printFrame.style.pointerEvents = 'none';
     printFrame.setAttribute('aria-hidden', 'true');
 
     document.body.appendChild(printFrame);
@@ -55,28 +55,34 @@ export function printElement(
       throw new Error('Unable to access print frame document');
     }
 
-    // 2. Collect all styles & stylesheets from the main document
+    // 1. Collect all styles & stylesheets from the main document
     const headStyles: string[] = [];
-
-    // Copy <link rel="stylesheet">
     const linkTags = document.querySelectorAll('link[rel="stylesheet"]');
     linkTags.forEach(link => {
       headStyles.push(link.outerHTML);
     });
-
-    // Copy <style> tags (Tailwind CSS, fonts, etc.)
     const styleTags = document.querySelectorAll('style');
     styleTags.forEach(style => {
       headStyles.push(style.outerHTML);
     });
 
-    // Specific print sizing and page rules
-    const printPageRule = isThermal80mm
+    // 2. Top-level @page rule (never nested inside @media print)
+    const atPageRule = isThermal80mm
       ? `
         @page {
           size: 80mm auto;
           margin: 0;
         }
+      `
+      : `
+        @page {
+          size: ${isLandscape ? 'A4 landscape' : 'A4 portrait'};
+          margin: 8mm 8mm;
+        }
+      `;
+
+    const layoutRules = isThermal80mm
+      ? `
         body {
           width: 80mm !important;
           max-width: 80mm !important;
@@ -85,6 +91,7 @@ export function printElement(
           font-size: 11px !important;
         }
         .printable-receipt {
+          display: block !important;
           width: 100% !important;
           max-width: 100% !important;
           box-shadow: none !important;
@@ -93,10 +100,6 @@ export function printElement(
         }
       `
       : `
-        @page {
-          size: ${isLandscape ? 'A4 landscape' : 'A4 portrait'};
-          margin: 8mm 8mm;
-        }
         body {
           width: 100% !important;
           margin: 0 !important;
@@ -105,7 +108,12 @@ export function printElement(
         }
         .print-container,
         .printable-document-container,
-        .printable-report {
+        .printable-report,
+        .printable-invoice,
+        .printable-invoice-a4,
+        .printable-voucher,
+        .printable-statement,
+        .printable-barcodes {
           display: block !important;
           width: 100% !important;
           max-width: 100% !important;
@@ -121,23 +129,12 @@ export function printElement(
           break-inside: auto !important;
           page-break-inside: auto !important;
         }
-        .printable-invoice, .printable-voucher, .printable-statement {
-          width: 100% !important;
-          max-width: 100% !important;
-          height: auto !important;
-          min-height: 0 !important;
-          max-height: none !important;
-          overflow: visible !important;
-          box-shadow: none !important;
-          border: none !important;
-          padding: 0 !important;
-          break-inside: auto !important;
-          page-break-inside: auto !important;
-        }
       `;
 
     const printResetStyles = `
       <style>
+        ${atPageRule}
+
         *, *::before, *::after {
           box-sizing: border-box !important;
           -webkit-print-color-adjust: exact !important;
@@ -151,6 +148,7 @@ export function printElement(
           min-height: 0 !important;
           max-height: none !important;
           overflow: visible !important;
+          position: static !important;
           font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
         }
         table {
@@ -174,15 +172,11 @@ export function printElement(
           break-after: auto !important;
           page-break-after: auto !important;
         }
-        td, th {
-          break-inside: avoid !important;
-          page-break-inside: avoid !important;
-        }
         .no-print, button, input, select {
           display: none !important;
         }
-        
-        /* Force light-mode colors inside print iframe to resolve dark-mode black box variables */
+
+        /* Force light-mode colors inside print iframe to resolve dark-mode variables */
         body, html, .print-container, [class*="bg-zinc-50"], [class*="bg-zinc-100"], [class*="bg-zinc-200"] {
           --color-zinc-50: #fafafa !important;
           --color-zinc-100: #f4f4f5 !important;
@@ -210,7 +204,7 @@ export function printElement(
         .border-zinc-200 { border-color: #e4e4e7 !important; }
         .border-zinc-300 { border-color: #d4d4d8 !important; }
 
-        ${printPageRule}
+        ${layoutRules}
 
         @media print {
           html, body {
@@ -219,8 +213,13 @@ export function printElement(
             min-height: 0 !important;
             max-height: none !important;
             overflow: visible !important;
+            position: static !important;
           }
-          ${printPageRule}
+          ${layoutRules}
+          table {
+            break-inside: auto !important;
+            page-break-inside: auto !important;
+          }
           thead { display: table-header-group !important; }
           tbody { display: table-row-group !important; }
           tfoot { display: table-row-group !important; }
@@ -232,8 +231,24 @@ export function printElement(
       </style>
     `;
 
-    // 3. Clone printable element content
-    const contentHtml = element.outerHTML;
+    // 3. Clone printable element and strip screen-only flex/height/overflow clipping classes on containers
+    const clonedNode = element.cloneNode(true) as HTMLElement;
+    const classesToStrip = ['flex', 'flex-col', 'items-start', 'items-center', 'justify-center', 'overflow-hidden', 'overflow-y-auto', 'h-screen'];
+    const sanitizeContainer = (el: HTMLElement | null) => {
+      if (!el) return;
+      classesToStrip.forEach(cls => el.classList.remove(cls));
+      el.style.display = 'block';
+      el.style.height = 'auto';
+      el.style.maxHeight = 'none';
+      el.style.overflow = 'visible';
+    };
+    sanitizeContainer(clonedNode);
+    const innerReport = clonedNode.querySelector('.printable-report') as HTMLElement | null;
+    if (innerReport) {
+      sanitizeContainer(innerReport);
+    }
+
+    const contentHtml = clonedNode.outerHTML;
 
     // 4. Construct printable document
     const fullHtml = `
@@ -254,11 +269,6 @@ export function printElement(
       </html>
     `;
 
-    frameDoc.open();
-    frameDoc.write(fullHtml);
-    frameDoc.close();
-
-    // 5. Trigger Print after assets, images & layout have settled
     const printWindow = printFrame.contentWindow;
     if (!printWindow) {
       throw new Error('Print frame window not available');
@@ -280,26 +290,41 @@ export function printElement(
       }
     };
 
-    const images = Array.from(frameDoc.querySelectorAll('img')).filter(img => !img.complete);
-    if (images.length === 0) {
-      setTimeout(() => {
-        printWindow.requestAnimationFrame(() => triggerPrint());
-      }, 200);
-    } else {
-      let remaining = images.length;
-      const onImgDone = () => {
-        remaining -= 1;
-        if (remaining <= 0) {
-          printWindow.requestAnimationFrame(() => triggerPrint());
-        }
-      };
-      images.forEach(img => {
-        img.addEventListener('load', onImgDone, { once: true });
-        img.addEventListener('error', onImgDone, { once: true });
+    const waitAndPrint = () => {
+      const fontsReady: Promise<any> =
+        frameDoc.fonts && frameDoc.fonts.ready ? frameDoc.fonts.ready.catch(() => undefined) : Promise.resolve();
+      const images = Array.from(frameDoc.querySelectorAll('img')).filter(img => !img.complete);
+      const imagesReady =
+        images.length === 0
+          ? Promise.resolve()
+          : Promise.all(
+              images.map(
+                img =>
+                  new Promise<void>(resolve => {
+                    img.addEventListener('load', () => resolve(), { once: true });
+                    img.addEventListener('error', () => resolve(), { once: true });
+                  })
+              )
+            );
+
+      Promise.race([
+        Promise.all([fontsReady, imagesReady]),
+        new Promise<void>(resolve => setTimeout(resolve, 1200)),
+      ]).then(() => {
+        printWindow.requestAnimationFrame(() => {
+          setTimeout(triggerPrint, 80);
+        });
       });
-      // Safety fallback so print always triggers even if an image stalls
-      setTimeout(triggerPrint, 600);
-    }
+    };
+
+    printFrame.addEventListener('load', waitAndPrint, { once: true });
+
+    frameDoc.open();
+    frameDoc.write(fullHtml);
+    frameDoc.close();
+
+    // Safety fallback in case load event already fired synchronously or did not fire
+    setTimeout(triggerPrint, 1800);
 
     return true;
   } catch (error) {

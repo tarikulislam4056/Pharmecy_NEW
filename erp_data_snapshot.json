@@ -365,7 +365,7 @@
     "dueReminderTemplate": "সম্মানিত {customer_name}, {store_name}-এ আপনার বর্তমান বকেয়া ৳{current_due} টাকা। অনুগ্রহ করে বকেয়া পরিশোধ করার জন্য বিনীত অনুরোধ করা হচ্ছে। যোগাযোগ: {store_phone}",
     "warrantyResolvedTemplate": "সম্মানিত {customer_name}, আপনার ওয়ারেন্টি ক্লেইম (টিকিট #{ticket_no}, {product_name}) সমাধান ({status}) হয়েছে। নোট: {note}। অনুগ্রহ করে দোকান থেকে পণ্যটি সংগ্রহ করার অনুরোধ করা হলো। ধন্যবাদ, {store_name}"
   },
-  "lastUpdatedEpoch": 1795338125824,
+  "lastUpdatedEpoch": 1795407973028,
   "is_reset_wipe": true,
   "deletedProductIds": [],
   "deletedEntityIds": {},
@@ -2125,7 +2125,7 @@
           "strength": "100mg",
           "dosageSchedule": "১ + ০ + ১ (সকালে ও রাতে ভরা পেটে)",
           "frequencyPerDay": 2,
-          "mealTiming": "খা���য়ার ঠিক মাঝখানে (চর্বিযুক্ত খাবারের সাথে)",
+          "mealTiming": "খাওয়ার ঠিক মাঝখানে (চর্বিযুক্ত খাবারের সাথে)",
           "duration": "১ - ২ সপ্তাহ (পাল্স থেরাপি)",
           "instructions": "নখের ফাঙ্গাসে অত্যন্ত কার্যকর। ভরা পেটে সেবন করলে ভালো শোষিত হয়।",
           "precautions": "লিভারের রোগ থাকলে চিকিৎসকের পরামর্শ নিন।"

@@ -1,6 +1,6 @@
 -- =========================================================================
 -- DokanPro Enterprise ERP - Production-Grade MySQL/MariaDB Database Dump
--- Generated At : 2026-11-22T09:02:04.868Z (22/11/2026)
+-- Generated At : 2026-11-23T04:26:12.035Z (23/11/2026)
 -- Developer    : Md. Tarikul Islam
 -- Phone        : 01312305225
 -- Address      : Sherpur, Sadar, Sherpur

@@ -175,7 +175,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       if (summarySearch.trim()) {
         const q = summarySearch.toLowerCase();
         const match =
-          prod.name.toLowerCase().includes(q) ||
+          (prod.name || '').toLowerCase().includes(q) ||
           (prod.nameBn && prod.nameBn.toLowerCase().includes(q)) ||
           (prod.barcode && prod.barcode.toLowerCase().includes(q)) ||
           (prod.batchNumber && prod.batchNumber.toLowerCase().includes(q)) ||
@@ -244,7 +244,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ initialReportType = 's
       if (lowStockSearch.trim()) {
         const q = lowStockSearch.toLowerCase();
         const match =
-          prod.name.toLowerCase().includes(q) ||
+          (prod.name || '').toLowerCase().includes(q) ||
           (prod.nameBn && prod.nameBn.toLowerCase().includes(q)) ||
           (prod.sku && prod.sku.toLowerCase().includes(q)) ||
           (prod.barcode && prod.barcode.toLowerCase().includes(q)) ||
